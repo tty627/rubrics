@@ -1,0 +1,29 @@
+[
+  {
+    "name": "gen-main",
+    "model_id": "your-model-id",
+    "base_url": "http://your-vllm-server:8000/v1",
+    "api_key": "EMPTY",
+    "family": "qwen",
+    "roles": ["generator"],
+    "timeout": 180
+  },
+  {
+    "name": "gen-alt",
+    "model_id": "another-model-id",
+    "base_url": "http://another-server:8001/v1",
+    "api_key": "EMPTY",
+    "family": "intern",
+    "roles": ["generator", "diagnoser"],
+    "timeout": 180
+  },
+  {
+    "name": "judge",
+    "model_id": "judge-model-id",
+    "base_url": "http://judge-server:8002/v1",
+    "api_key": "EMPTY",
+    "family": "glm",
+    "roles": ["judge"],
+    "timeout": 180
+  }
+]
