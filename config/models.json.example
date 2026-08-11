@@ -1,29 +1,41 @@
 [
   {
-    "name": "gen-main",
-    "model_id": "your-model-id",
-    "base_url": "http://your-vllm-server:8000/v1",
-    "api_key": "EMPTY",
-    "family": "qwen",
-    "roles": ["generator"],
-    "timeout": 180
-  },
-  {
-    "name": "gen-alt",
-    "model_id": "another-model-id",
-    "base_url": "http://another-server:8001/v1",
-    "api_key": "EMPTY",
-    "family": "intern",
-    "roles": ["generator", "diagnoser"],
-    "timeout": 180
-  },
-  {
-    "name": "judge",
-    "model_id": "judge-model-id",
-    "base_url": "http://judge-server:8002/v1",
-    "api_key": "EMPTY",
+    "name": "glm-ac",
+    "model_id": "GLM-5.2-FP8-ac",
+    "base_url": "http://s-20260716110819-fqdcz.ailab-opencompass.pjh-service.org.cn/v1",
+    "api_key": "sk-admin",
     "family": "glm",
-    "roles": ["judge"],
-    "timeout": 180
+    "timeout": 300,
+    "roles": ["generator"],
+    "reasoning": true,
+    "max_tokens": 8192,
+    "no_think_extra": {"chat_template_kwargs": {"enable_thinking": false}},
+    "pool_group": "glm_pool",
+    "_comment": "pool_group 相同的端点会合并成一个 Pool，用于分流负载"
+  },
+  {
+    "name": "glm-ad",
+    "model_id": "GLM-5.2-FP8-ad",
+    "base_url": "http://s-20260716110846-bvugs.ailab-opencompass.pjh-service.org.cn/v1",
+    "api_key": "sk-admin",
+    "family": "glm",
+    "timeout": 300,
+    "roles": ["generator"],
+    "reasoning": true,
+    "max_tokens": 8192,
+    "no_think_extra": {"chat_template_kwargs": {"enable_thinking": false}},
+    "pool_group": "glm_pool",
+    "_comment": "合并后的 Pool 名为 glm-ac+glm-ad，按最少在飞请求数派发"
+  },
+  {
+    "name": "deepseek",
+    "model_id": "deepseek-chat",
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "你的 API key",
+    "family": "deepseek",
+    "timeout": 180,
+    "roles": ["generator", "judge", "diagnoser"],
+    "_comment": "deepseek 单副本，不进 pool_group，直接作为 Model 使用"
   }
 ]
+
