@@ -22,3 +22,6 @@ venv/
 *.swp
 .idea/
 .vscode/
+
+#监控面板
+.tools/
