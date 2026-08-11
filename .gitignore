@@ -1,0 +1,24 @@
+# LLM 调用缓存，体积大且可重建
+cache/
+*.cache
+
+# 中间产物与最终交付的 xlsx，不入库
+data/
+reports/
+*.xlsx
+!docs/**/*.xlsx
+
+# 模型端点配置含 api_key，不入库
+config/models.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器与系统
+.DS_Store
+*.swp
+.idea/
+.vscode/
