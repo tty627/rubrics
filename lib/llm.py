@@ -10,6 +10,11 @@ _lock = threading.Lock()
 MAX_BUDGET = 32768          # 空 content 逐轮加预算的上限
 _EMPTY_RETRY = 'empty-content'
 
+# 多天连跑要能扛住服务端重启、网络抖动、机器迁移。默认 10 次、退避封顶 90s，
+# 单次调用最坏约 12 分钟内自愈；配合磁盘缓存，服务端挂十分钟也只是变慢不会丢数据。
+RETRIES = int(os.environ.get('RP_RETRIES', 10))
+BACKOFF_CAP = float(os.environ.get('RP_BACKOFF_CAP', 90))
+
 # 思维链跑飞的自适应记忆：键为 (模型名, 步骤)。
 # 检测一次跑飞要白烧约 200s（推理吃光预算才知道），而跑飞是按 prompt 模板成片出现的
 # ——GLM 在 s03 的 R_w 提示上连挂数条。攒够 STRIKES 次就让该步后续调用直接从
@@ -155,7 +160,7 @@ def _cache_path(stage, k):
 
 
 def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
-         retries=4, extra=None, use_cache=True, thinking=None):
+         retries=None, extra=None, use_cache=True, thinking=None):
     """返回 (text, meta)。命中缓存不计费。
 
     max_tokens 缺省用 model.max_tokens。thinking=False 时附加 model.no_think_extra
@@ -165,6 +170,8 @@ def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
     content 是空串。这里视为失败、加倍预算重试，且**绝不把空串写进缓存**——
     否则这条记录会永久命中空缓存，事后无从排查。
     """
+    if retries is None:
+        retries = RETRIES
     extra = dict(extra or {})
     if thinking is False and model.no_think_extra:
         extra.update(model.no_think_extra)
@@ -247,7 +254,7 @@ def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
                  dt=time.time() - t0, att=att, endpoint=ep.name, msg=repr(e)[:200])
             # 预算不足是确定性失败，加完预算立刻重试，退避只对网络类错误有意义
             if att < retries - 1 and _EMPTY_RETRY not in str(e):
-                time.sleep(2 ** att * 1.5)
+                time.sleep(min(2 ** att * 1.5, BACKOFF_CAP))
     raise RuntimeError(f'{model.name} failed after {retries}: {last}')
 
 

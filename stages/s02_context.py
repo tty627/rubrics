@@ -16,7 +16,7 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
-WORKERS = int(os.environ.get('RP_WORKERS', 8))
+WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)           # 展开需要推理，默认开
 N_MIN, N_MAX = 2, 4
 

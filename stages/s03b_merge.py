@@ -19,7 +19,7 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
-WORKERS = int(os.environ.get('RP_WORKERS', 6))
+WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)
 STRATEGY = os.environ.get('RP_RET', 'hybrid')
 SRC = os.environ.get('RP_S03_OUT', f's03_perspective_{STRATEGY}.jsonl')

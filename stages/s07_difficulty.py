@@ -21,7 +21,7 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
-WORKERS = int(os.environ.get('RP_WORKERS', 6))
+WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)
 
 SYS = '''你在为一道题补充**难度区分准则**（R_dist）。

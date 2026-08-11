@@ -33,10 +33,19 @@ def main():
     print('=== Phase 1 完整流程 ===\n')
     t0 = time.time()
 
+    # Phase 1 只跑 20 条子集：s00b 抽样后，后续步骤必须读 seed_phase1.jsonl，
+    # 否则会跑全量 453 条（那是 Phase 2 的事，调用量 20 倍）
+    env = dict(os.environ)
+    env['RP_SEED'] = 'seed_phase1.jsonl'
+
     for i, (mod, desc) in enumerate(STAGES, 1):
         print(f'[{i}/{len(STAGES)}] {desc}...')
         t1 = time.time()
-        os.system(f'python3 stages/{mod}.py > /tmp/rp_{mod}.log 2>&1')
+        # s00b 自己读 seed.jsonl 做抽样，不受 RP_SEED 影响
+        cmd = f'RP_SEED=seed_phase1.jsonl python3 stages/{mod}.py > /tmp/rp_{mod}.log 2>&1'
+        if mod == 's00b_sample':
+            cmd = f'python3 stages/{mod}.py > /tmp/rp_{mod}.log 2>&1'
+        os.system(cmd)
         dt = time.time() - t1
         print(f'  完成，用时 {dt:.0f}s\n')
 

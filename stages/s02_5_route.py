@@ -17,7 +17,7 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
-WORKERS = int(os.environ.get('RP_WORKERS', 8))
+WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)
 TYPES = ['verifiable', 'open', 'hybrid']
 FORM = {'verifiable': 'gated_answer', 'open': 'analytic', 'hybrid': 'multi_part'}

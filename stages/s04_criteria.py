@@ -21,7 +21,7 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
-WORKERS = int(os.environ.get('RP_WORKERS', 6))
+WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)
 SRC = os.environ.get('RP_S03_OUT', 's03b_merged_hybrid.jsonl')
 
@@ -69,27 +69,43 @@ def main():
     total_p = sum(len(r['perspectives']) for r in recs)
     print(f'  视角总数: {total_p}')
 
-    def work(r):
-        out = []
-        for p in r['perspectives']:
-            obj, _ = stage.json_call(m, build(r, p), stage='s04', thinking=THINK)
-            cri = obj.get('criteria') or []
-            if not isinstance(cri, list):
-                cri = []
-            for i, c in enumerate(cri[:3]):
-                if not isinstance(c, dict):
-                    continue
-                out.append({'criterion_id': f'{r["rid"]}-c{len(out) + 1}',
-                            'perspective_id': p.get('perspective_id', ''),
-                            'scenario_id': p.get('scenario_id', ''),
-                            'block_id': p.get('block_id', ''),
-                            'positive': str(c.get('positive', ''))[:200],
-                            'negative': str(c.get('negative', ''))[:200],
-                            'rationale': str(c.get('rationale', ''))[:120],
-                            'score': WEIGHT_MAP.get(p.get('weight_hint'), 5)})
-        return {**r, 'criteria': out, 'criteria_raw_perspectives': len(r['perspectives'])}
+    # 按 (题, 视角) 摊平后再并发：若按题并发、题内视角串行，则墙钟由「视角最多的
+    # 那道题」决定——实测有题展开 47 个视角，全量跑会拖成几小时。摊平后并发度
+    # 由 WORKERS 决定而与题的视角数无关。
+    jobs = [(r, p) for r in recs for p in r['perspectives']]
+    print(f'  摊平后任务数: {len(jobs)}')
 
-    res, _ = stage.run(work, recs, workers=WORKERS, desc='s04')
+    def one(job):
+        r, p = job
+        obj, _ = stage.json_call(m, build(r, p), stage='s04', thinking=THINK)
+        cri = obj.get('criteria') or []
+        if not isinstance(cri, list):
+            cri = []
+        out = []
+        for c in cri[:3]:
+            if not isinstance(c, dict):
+                continue
+            out.append({'perspective_id': p.get('perspective_id', ''),
+                        'scenario_id': p.get('scenario_id', ''),
+                        'block_id': p.get('block_id', ''),
+                        'positive': str(c.get('positive', ''))[:200],
+                        'negative': str(c.get('negative', ''))[:200],
+                        'rationale': str(c.get('rationale', ''))[:120],
+                        'score': WEIGHT_MAP.get(p.get('weight_hint'), 5)})
+        return r['rid'], out
+
+    done, _ = stage.run(one, jobs, workers=WORKERS, desc='s04')
+    by_rid = {}
+    for rid, cs in done:
+        by_rid.setdefault(rid, []).extend(cs)
+
+    res = []
+    for r in recs:
+        cs = by_rid.get(r['rid'], [])
+        for i, c in enumerate(cs):          # criterion_id 在汇总后统一编号，保证连续
+            c['criterion_id'] = f'{r["rid"]}-c{i + 1}'
+        res.append({**r, 'criteria': cs,
+                    'criteria_raw_perspectives': len(r['perspectives'])})
     stage.write_jsonl('s04_criteria.jsonl', res)
 
     nc = sum(len(r['criteria']) for r in res)

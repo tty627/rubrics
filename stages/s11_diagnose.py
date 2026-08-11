@@ -26,7 +26,7 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
-WORKERS = int(os.environ.get('RP_WORKERS', 6))
+WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)
 
 SYS_SUBJ = '''你是 RIFT 诊断器，检测准则是否**主观**（Subjective）。
@@ -86,23 +86,37 @@ def main():
     nc_total = sum(len(r['criteria']) for r in recs)
     print(f'  准则总数: {nc_total}')
 
-    def work(r):
-        for c in r['criteria']:
-            diag = {}
-            for mode in ('Subjective', 'Non-Atomic', 'Ungrounded'):
-                obj, _ = stage.json_call(m, build(r, c, mode),
-                                        stage=f's11_{mode[:4].lower()}', thinking=THINK)
-                verd = obj.get('verdict', 'clean')
-                if verd not in ('clean', 'defective'):
-                    verd = 'clean'
-                diag[mode.lower()] = {
-                    'verdict': verd,
-                    'reason': str(obj.get('reason', ''))[:120] if verd == 'defective' else ''
-                }
-            c['diagnostics'] = diag
-        return r
+    # 摊平到 (题, 准则, 诊断模式) 再并发。这一步的调用量是全流程最大的
+    # （准则数 × 3），若题内串行，全量 453 条要跑十几小时。
+    MODES = ('Subjective', 'Non-Atomic', 'Ungrounded')
+    jobs = [(r, c, mode) for r in recs for c in r['criteria'] for mode in MODES]
+    print(f'  摊平后任务数: {len(jobs)} ({nc_total} 准则 × {len(MODES)} 模式)')
 
-    res, _ = stage.run(work, recs, workers=WORKERS, desc='s11')
+    def one(job):
+        r, c, mode = job
+        obj, _ = stage.json_call(m, build(r, c, mode),
+                                 stage=f's11_{mode[:4].lower()}', thinking=THINK)
+        verd = obj.get('verdict', 'clean')
+        if verd not in ('clean', 'defective'):
+            verd = 'clean'
+        return (r['rid'], c['criterion_id'], mode.lower(),
+                {'verdict': verd,
+                 'reason': str(obj.get('reason', ''))[:120] if verd == 'defective' else ''})
+
+    done, _ = stage.run(one, jobs, workers=WORKERS, desc='s11')
+    diag = {}
+    for rid, cid, mode, d in done:
+        diag.setdefault((rid, cid), {})[mode] = d
+
+    for r in recs:
+        for c in r['criteria']:
+            got = diag.get((r['rid'], c['criterion_id']), {})
+            # 缺的模式按 clean 兜底并标记，避免下游把「没诊断」当成「诊断通过」
+            c['diagnostics'] = {m.lower(): got.get(m.lower(),
+                                                   {'verdict': 'clean', 'reason': '',
+                                                    'missing': True})
+                                for m in MODES}
+    res = recs
     stage.write_jsonl('s11_diagnosed.jsonl', res)
 
     # 汇总统计
