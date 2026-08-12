@@ -195,7 +195,7 @@ def validate_phase2():
     empty_mp = sum(1 for r in route
                    if r['rubric_form'] == 'multi_part' and len(r.get('blocks', [])) < 2)
 
-    diag_stats = {'subjective': 0, 'non_atomic': 0, 'ungrounded': 0}
+    diag_stats = {'subjective': 0, 'non-atomic': 0, 'ungrounded': 0}  # 键要带连字符
     for r in final:
         for c in r['criteria']:
             for k in diag_stats:
@@ -215,7 +215,7 @@ def validate_phase2():
         'route_errors': errors,
         'multi_part_empty': empty_mp,
         'rift_subjective_pct': rift_rate['subjective'],
-        'rift_non_atomic_pct': rift_rate['non_atomic'],
+        'rift_non_atomic_pct': rift_rate['non-atomic'],
         'rift_ungrounded_pct': rift_rate['ungrounded'],
         'rewrite_rate_pct': rw_rate,
     }
@@ -230,7 +230,7 @@ def validate_phase2():
     print(f'  题型判定错误   : {errors}')
     print(f'  multi_part空壳 : {empty_mp}')
     print(f'  RIFT Subj={rift_rate["subjective"]:.1f}% '
-          f'NonAtom={rift_rate["non_atomic"]:.1f}% Ungnd={rift_rate["ungrounded"]:.1f}%')
+          f'NonAtom={rift_rate["non-atomic"]:.1f}% Ungnd={rift_rate["ungrounded"]:.1f}%')
     print(f'  改写率         : {rw_rate:.1f}%')
     print(f'\n✓ 指标已写入 reports/phase2_metrics.json')
     return True
