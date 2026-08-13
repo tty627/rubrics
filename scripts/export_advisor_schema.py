@@ -58,12 +58,18 @@ def build_record(r, full=False):
     # gated_answer 的答案项 = 正向里分值最高的那条（s04L 的分值规则给到 6-8 分）。
     # 要求 >=4 分且唯一：若答案项已被诊断删除，剩下全是 1 分支撑项，此时不该
     # 把某条支撑项冒充成闸门 —— 宁可不标，让下游看得出这题的闸门丢了。
-    gate_idx = None
+    # 闸门可能不止一条：s04Lb 会把「全部/每一个都对」式的悬崖项拆成
+    # 「规则对不对」+「条目全不全」两条各占一半分值（q0358 的 +8 → +4/+4）。
+    # 拆完就没有唯一最高分了，但这两条合起来仍是这道题的答案判据，都该标 is_gate。
+    # 判定：分值 >= 满分的 30% 且 >= 4 分。仍要求 4 分下限，避免答案项真被删掉时
+    # 把 1 分的支撑项冒充成闸门。
+    gate_idx = set()
     if form == 'gated_answer':
-        top = max(c['score'] for c in pos)
-        if top >= 4 and sum(1 for c in pos if c['score'] == top) == 1:
-            gate_idx = next(i for i, c in enumerate(rubrics)
-                            if c.get('is_positive') and c['score'] == top)
+        s_max = sum(c['score'] for c in pos)
+        for i, c in enumerate(rubrics):
+            if (c.get('is_positive') and c['score'] >= 4
+                    and s_max and c['score'] / s_max >= 0.3):
+                gate_idx.add(i)
 
     # cid → 诊断结果，供内部档挂回
     diag = {d['_criterion_id']: d for d in (r.get('diagnoses') or [])
@@ -72,7 +78,7 @@ def build_record(r, full=False):
     out = []
     for i, c in enumerate(rubrics):
         item = {k: c[k] for k in DELIVER_FIELDS if k in c}
-        item['is_gate'] = (i == gate_idx)
+        item['is_gate'] = (i in gate_idx)
         if full:
             for k in INTERNAL_FIELDS:
                 if k in c:

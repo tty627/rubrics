@@ -44,17 +44,21 @@ ACTION = {
 }
 
 
-def gate_cid(r):
-    """gated_answer 题的答案项 criterion_id；非该题型或无法确定时返回 None。"""
+def gate_cids(r):
+    """gated_answer 题的答案项 criterion_id 集合。
+
+    可能不止一条：s04Lb 会把「全部/每一个都对」式的悬崖项拆成「规则对不对」+
+    「条目全不全」两条各占一半分值，两条合起来才是答案判据，都要受豁免保护。
+    判定与 export_advisor_schema.py 的 is_gate 保持一致：>=4 分且 >=30% 满分。
+    """
     if r.get('rubric_form') != 'gated_answer':
-        return None
+        return set()
     pos = [c for c in r.get('rubrics') or [] if c.get('is_positive')]
-    if not pos:
-        return None
-    top = max(c['score'] for c in pos)
-    if top < 4 or sum(1 for c in pos if c['score'] == top) != 1:
-        return None
-    return next(c.get('_criterion_id') for c in pos if c['score'] == top)
+    s_max = sum(c['score'] for c in pos)
+    if not s_max:
+        return set()
+    return {c.get('_criterion_id') for c in pos
+            if c['score'] >= 4 and c['score'] / s_max >= 0.3} - {None}
 
 
 def decide(r):
@@ -67,7 +71,7 @@ def decide(r):
     若让 drop 优先，这批照样被删，加检测器就白加了。事实错误的准则**主题是对的、
     内容写错了**，正确处置是拿真值重写，不是删。
     """
-    protect = {gate_cid(r)} - {None}
+    protect = gate_cids(r)
     drop, rewrite = set(), {}
 
     for d in r.get('diagnoses') or []:
