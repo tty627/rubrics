@@ -19,7 +19,7 @@ s07 加 R_dist、s08 加惩罚项。而 §2.5 给 analytic 的目标是 5-8 条�
 输出即导师指定 schema（criteria/score/reason/dimension/is_positive），
 内部字段 `_` 前缀保留血缘（设计文档硬约束第 4 条，步骤 13/14 依赖）。
 """
-import json, os, sys
+import json, os, re, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -127,6 +127,52 @@ def build(r):
             {'role': 'user', 'content': user}]
 
 
+# ---- 程序化护栏（2026-08-13 加）----------------------------------------
+# prompt 里已经禁了这几类写法，但实测仍有残留（空泛词 17.3% 题、空壳答案 35 条、
+# 全量复合悬崖 72 条、提及即得分 29.6% 正项）。模型管不住的用代码兜：
+# 这里只打标不删，交给 s04Lb_split 按标重写，避免全量 452 题重跑。
+VAGUE = ('准确', '完整', '清晰', '合理', '充分', '恰当', '适当', '全面',
+         '深入', '有效', '规范', '严谨', '系统性', '条理', '详细')
+# 「可核验锚点」：数字、拉丁串、公式符号、引号包裹的字面量
+ANCHOR = re.compile(r'[0-9A-Za-z=＝≈±<>≤≥$]|["“”]')
+# 只引用「标准答案」却没写出答案本身
+REF_ONLY = re.compile(r'与?\s*(标准|参考)答案\s*(一致|不一致|相符|不符)|标准答案')
+# 全量复合：一条里要求「全部/所有/每一个都对」
+BULK = re.compile(r'全部|所有|每一?[卦条项个]|无遗漏|完全一致')
+# 提及即得分：动词开头、只问「提没提」
+MENTION = re.compile(r'^(提及|提到|涉及|包含)')
+# 扣分项的主观阈值词
+SUBJ_DEG = re.compile(r'严重|显著|根本性|明显|大幅|过度')
+
+
+def flag(final, s_max):
+    """给准则打质量标记。改标记不改内容，下游 s04Lb_split 据此重写。"""
+    for c in final:
+        t = c['criteria']
+        anchored = bool(ANCHOR.search(t))
+
+        # ① 空泛词且无可核验锚点
+        if any(w in t for w in VAGUE) and not anchored:
+            c['_flag_vague'] = True
+        # ② 只说「与标准答案一致」，判分器手上没有标准答案，无法执行
+        if REF_ONLY.search(t) and not anchored:
+            c['_flag_no_groundtruth'] = True
+        # ③ 分数悬崖：单条占满分 ≥50% 且本身是全量/复合要求 → 实为 0/1 判定
+        if (c['is_positive'] and s_max and c['score'] / s_max >= 0.5
+                and (BULK.search(t) or '且' in t)):
+            c['_flag_cliff'] = True
+        # ④ 提及即得分：只校验关键词出现，不校验说得对不对。
+        #    限短句 —— 长句多半已经写了具体主张（哪怕全中文没命中 ANCHOR）；
+        #    带「全部/无遗漏」的是完备性检查，可核验，不算这一类。
+        if (c['is_positive'] and MENTION.match(t) and not anchored
+                and len(t) <= 20 and not BULK.search(t)):
+            c['_flag_mention_only'] = True
+        # ⑤ 扣分项用主观程度词当判定线
+        if not c['is_positive'] and SUBJ_DEG.search(t) and not anchored:
+            c['_flag_subjective_threshold'] = True
+    return final
+
+
 def parse(r, raw):
     """把模型输出规整成交付 schema + 内部血缘字段。"""
     is_gate = r.get('rubric_form') == 'gated_answer'
@@ -173,7 +219,7 @@ def parse(r, raw):
                    key=lambda x: -x['score'])
     neg_l = sorted([c for c in out if not c['is_positive']],
                    key=lambda x: x['score'])[:2]
-    keep_pos = max(N_MIN - len(neg_l), N_MAX - len(neg_l))
+    keep_pos = N_MAX - len(neg_l)
     final = pos_l[:keep_pos] + neg_l
 
     # gated_answer 答案项占比校验与自动调整
@@ -208,7 +254,7 @@ def parse(r, raw):
                 # 重新构建final（保持顺序）
                 final = [answer_item] + other_items + neg_l
 
-    return final
+    return flag(final, sum(c['score'] for c in final if c['is_positive']))
 
 
 def main():

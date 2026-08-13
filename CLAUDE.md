@@ -14,39 +14,58 @@ Rubric 生成能力建设：基于学术论文实现的评估标准(rubric)自�
    - `xlsx.py`: 直接解析 xlsx 文件(zipfile + ElementTree)，无需 openpyxl/pandas
    - `llm.py`: OpenAI 兼容客户端，带磁盘缓存(按 model+prompt+params 哈希)、并发控制、重试
 
-2. **stages/** - 14 步流水线，每步独立读写 jsonl
+2. **stages/** - lean 主线，每步独立读写 jsonl
    - 每步可单独重跑，不影响其他步骤
-   - 已实现 s00-s09、s11、s11b（Phase 0-3）
+   - 9 个脚本：s00_seed / s00b_sample / s01_filter / s02_context / s02_5_route
+     / s03_perspective / s04L_rubric / s11L_diagnose / s11Lb_remedy
+   - 旧全量线（s03b/s04/s07/s08/s09/s11/s11b）已归档到 `legacy/full_path/`
 
 3. **config/** - 模型端点配置
    - `models.json`: 运行时配置，含 api_key，已在 .gitignore
+     （`config/models.json.*` 通配同样被忽略，防 `.bak` 泄露密钥）
    - `models.json.example`: 配置模板
 
-### 仓库布局（2026-08-12 整理后）
+### 仓库布局（2026-08-13 整理后）
 
 ```
+stages/      lean 主线 9 个脚本
+lib/         基础库 5 个（含 dimensions.py 通用维度词表）
+legacy/      已归档，不参与交付，保留可运行状态（见 legacy/README.md）
+  full_path/   旧全量线 9 个（含确定作废的 s09_normalize）
+  phase3/      多模型聚合支线 4 个
+  phase4/      s05_grounding / s05b_anchor，Phase 4 启动时取回 stages/
+  run_pipeline.py  只驱动 full_path/ 那条线
 docs/
-  design/    流程定稿与实施计划（原 docs/ 根目录，路径已迁移）
+  design/    流程定稿与实施计划
   advisor/   给导师看的展示材料
   reports/   技术报告：审查、修复记录、phase 报告
-  dev/       开发笔记（暂空）
 outputs/
   excel/     填充后的 xlsx 产出
   samples/   样例展示
-scripts/     辅助脚本（quick_stats、fill_xlsx_preserve_format 等）
+scripts/     辅助脚本 6 个；一次性/被取代的在 scripts/legacy/
+tools/       watch.py；其余监控面板在 tools/legacy/
 ```
 
 `scripts/` 下的脚本已改为基于 `__file__` 定位仓库根，可从任意目录调用。
 
-### 数据流
+### 数据流（lean 主线）
 
 ```
 xlsx (input.xlsx)
-  → s00_seed.py → seed.jsonl + baseline.json
-  → s02_context.py → s02_context.jsonl
-  → ... (14 个 stage，逐步产出中间 jsonl)
-  → rubrics_final.jsonl + filled.xlsx
+  → s00_seed        → seed.jsonl + baseline.json
+  → s01_filter      → s01_filter.jsonl
+  → s02_context     → s02_context.jsonl          (intent + scenarios)
+  → s02_5_route     → s02_5_route.jsonl          (question_type + rubric_form + blocks)
+  → s03_perspective → s03_perspective_lean.jsonl (RP_RET=lean)
+  → s04L_rubric     → s04L_rubric.jsonl          (准则直出，含血缘 + 质量标记)
+  → s11L_diagnose   → s11L_diagnosed.jsonl       (RIFT 三失效模式)
+  → s11Lb_remedy    → s11Lb_remedied.jsonl + _defect_queue.jsonl
+  → export_advisor_schema.py
+      → outputs/rubrics_advisor_lean.jsonl  交付档
+      → outputs/rubrics_internal.jsonl      内部档（血缘/诊断/标记）
 ```
+
+一键重跑：`bash scripts/rerun_lean_fixed.sh`（清缓存加 `RP_CLEAN=1`）。
 
 每步输出在 `data/` 下，缓存在 `cache/<stage>/<hash>.json`。
 
@@ -116,32 +135,20 @@ RP_OUT=/path/to/output python3 stages/s00_seed.py
 
 ### 监视面板
 
-提供两个版本：
-
-**watch_v2.py（推荐，概览模式）** - 三层结构，信息密度适中：
+**watch.py** - 8 区块详尽模式：
 ```bash
-python3 tools/watch_v2.py        # 全屏刷新，Ctrl-C 退出
-python3 tools/watch_v2.py --once # 一次性快照
-python3 tools/watch_v2.py --all  # 展开所有步骤（含未开始/已完成）
-```
-
-显示内容：
-- **状态栏**：端点健康度 | 当前任务 | 关键指标
-- **进度表**：活跃步骤（带速率趋势 ↑↓→）+ 折叠已完成/未开始
-- **资源统计**：Token用量 + 成本估算 + 端点负载 + 调用成功率
-
-**watch.py（详尽模式）** - 8区块，适合深度调试：
-```bash
-python3 tools/watch.py          # 全屏刷新
-python3 tools/watch.py --once   # 快照
+python3 tools/watch.py          # 全屏刷新，Ctrl-C 退出
+python3 tools/watch.py --once   # 快照，便于贴日志
 python3 tools/watch.py --tokens # 展开 token 明细
 ```
 
-额外显示：进程详情（pid/socket/环境变量）、在飞请求的完整prompt/output、最近完成的详细内容、产出文件列表。
+显示：进程详情（pid/socket/环境变量）、在飞请求的完整 prompt/output、
+最近完成的详细内容、产出文件列表、端点负载与调用成功率。
 
 详细说明见 `tools/README_watch.md`。
+（`panel.py` 等旧面板已归档到 `tools/legacy/`。曾经文档里提到的 `watch_v2.py` 从未存在。）
 
-**共同特性**：
+**特性**：
 - 只读，不影响在跑的进程
 - 全屏模式走终端备用屏(像 vim/htop)，退出后原内容恢复
 - 自动发现 `cache/` 下的新步骤，无需修改面板代码
@@ -157,33 +164,62 @@ python3 tools/watch.py --tokens # 展开 token 明细
 2. **判分器 ≠ 生成器**(步骤 12): 同系列模型有自偏好偏差，判分虚高
 3. **锚点集 ∉ 训练集**(步骤 14): 锚点集一旦参与训练就不再独立，失去参照作用
 4. **血缘标签必须在步骤 4 挂**: 用于回溯每条准则来自哪个 Scenario，后续诊断依赖此标签
-5. **闸门项不进 S_max 分母**(步骤 9): 闸门是 0/1 判定，不参与满分归一化
+   —— s04L 挂在 `_criterion_id / _perspective_ids / _scenario_ids`，
+   只进 `outputs/rubrics_internal.jsonl`（`--full`），不进交付档
+5. ~~**闸门项不进 S_max 分母**(步骤 9)~~ —— **导师 2026-08-13 推翻**：
+   score 直接当权重用，不在流水线内归一，归一化延后到判分阶段。
+   因此 `full_mark = sum(正向 score)` 保持原始整数，闸门项计入分母；
+   交付档用准则级 `is_gate` 标出闸门是哪一条，判分侧自行处理 0/1 语义。
+   `legacy/full_path/s09_normalize.py` 随之作废。
 
 ## Implementation Status
 
-当前已完成 Phase 0-3（452 条全量，约 96k 次调用）：
-- ✅ Phase 0 数据层(s00_seed.py) + 基础库(xlsx.py, llm.py)
+lean 主线已跑通 452 条全量（2026-08-13）：
+- ✅ Phase 0 数据层(s00_seed.py) + 基础库(xlsx.py, llm.py, dimensions.py)
 - ✅ Phase 1 试跑(20 条)：验证 RET 能导出多样视角
-- ✅ Phase 2 结构全量：步骤 1-4、7-9
-- ✅ Phase 3 多模型聚合(s06a/s06c/s06d/s06_aggregate) + RIFT 免池诊断(s11)
-- ✅ 步骤 5 Response Grounding(s05_grounding.py)：后补，drift 检查
-- ✅ 步骤 11b 诊断处置(s11b_remedy.py)：自动删除 defective 准则并重归一
+- ✅ Phase 2 结构全量
+- ✅ 步骤 4L 准则直出(s04L_rubric.py)：全题预算制，5.4 条/题
+- ✅ 步骤 11L RIFT 免池诊断 + 11Lb 分级处置
+- ✅ 交付导出(export_advisor_schema.py)：交付档 + 内部档双出
+
+归档但未废：`legacy/phase3/` 多模型聚合、`legacy/phase4/` grounding + 锚点集。
 
 待实现：
 - Phase 4 回复池 + 判分(约 +10k-15k 次)：步骤 10、12、13、14
+- 步骤 4Lb 非原子准则拆分(`stages/s04Lb_split.py`)，消费 `data/_defect_queue.jsonl`
 
-**已修复的关键偏差**：
-1. **步骤 9 归一化** (`docs/reports/PIPELINE_FIX_COMPLETE.md`)：原先输出 s_max=18~374，未做最终归一。现固定 `s_max=100`、正向准则 normalized_score 之和恒为 100，`s_max_raw` 保留原始分母。这是「badcase 阈值可全局设一个」的前提。
+**2026-08-13 修复批次**（起因见下方「交付审查」）：
 
-2. **步骤 4L rubrics 质量** (`docs/reports/RUBRICS_REVIEW_FINDINGS.md`, 2026-08-12)：
-   - ❌ **负向准则编造具体数值** (23题)：无参考错误时 LLM 编造具体字节/数值。修复：prompt 添加"禁止编造"约束 + 传递 ref_errors 信息
-   - ❌ **verifiable 答案项占比偏离** (21题)：答案项应占60-80%但实际21%-89%。修复：parse() 中添加自动调整逻辑，压缩其他准则到1分
-   - ⚠️  **准则表述空泛** (28题)：含"准确"、"完整"等空泛词。修复：扩展禁止词 + 添加反例/正例
-   - ⚠️  **未经 RIFT 诊断**：s04L 跳过了 s07/s08/s09，outputs/rubrics_advisor_lean.jsonl 绕过了诊断。修复：新增 s11L_diagnose.py + s11Lb_remedy.py 专门诊断 lean 流程
+1. **交付导出走错源**（根因，影响面最大）：`rerun_lean_fixed.sh` 的临时 heredoc
+   从 `data/s04L_rubric.jsonl`（**未经诊断**）导出，s11L/s11Lb 跑了但产出没进交付。
+   交付版 2452 条准则一条没过 RIFT。修复：改调 `export_advisor_schema.py --src data/s11Lb_remedied.jsonl`。
 
-   **影响范围**：65/452 题 (14.4%)，主要是 P0 级问题（破坏可判定性、稀释答案项权重）  
-   **修复状态**：✅ 代码已修改，待重新运行流程验证  
-   **实施指南**：`docs/reports/S04L_FIX_GUIDE.md`
+2. **RIFT non-atomic 过触发**：判 defective 1511/2452 = 61.6%，其中 non-atomic 1399 条（57%）。
+   把「A 如何、B 如何」这类**对比类准则**误判为非原子——而题目问的就是区别，拆开即失去意义。
+   修复：`s11L_diagnose.py` 的 `SYS_ATOM` 改为单一判定原则（拆开后两半能否各自独立成立）
+   + 四类原子白名单（对比/排除/列举完备/判断带限定）。
+
+3. **处置策略错误**：旧 `s11Lb` 一律删除，导致 344/452 题因「删完不足 3 条」被静默跳过，
+   真删的 108 题里 **4 道 gated_answer 的答案项被删掉**（q0008 满分 12→3）。
+   修复：按失效模式分级 —— subjective/ungrounded 删、non-atomic 落 `_defect_queue.jsonl` 待拆、
+   **闸门项一律豁免**、删后不足则回滚并打 `needs_regen`。
+
+4. **交付 schema 缺字段**：`rubric_form` / `is_gate` / `blocks` / 血缘全被
+   `DELIVER_FIELDS` 过滤掉了（数据一直在上游，不用重跑）。修复：导出层重写，加 `--src` / `--full`。
+
+5. **程序化护栏**：prompt 管不住的用代码兜，`s04L_rubric.py` 的 `flag()` 打五类标记
+   （`_flag_vague` / `_no_groundtruth` / `_cliff` / `_mention_only` / `_subjective_threshold`），
+   只打标不删，交给 s04Lb 重写，避免全量重跑。
+
+**交付审查发现**（`outputs/rubrics_advisor_lean.jsonl` 全量统计，2026-08-13）：
+- 35 条准则引用「标准答案」但交付档里没有标准答案 → 判分器无法独立执行
+- 115 题存在单条正向准则 ≥50% 满分，其中 72 条是「全部/且/每」全量复合 → 0/1 悬崖
+- 29.6% 正项是「提及即得分」型；53/500 负项用「严重/显著」当阈值
+- 13 条负项写死某个具体错误答案（过拟合参考错误）
+- 根因之一：`s00_seed.py:50` 的 `ref_errors` 只存了 key 名，**错误内容被丢弃**，
+  而 `s04L` 却告诉模型「本题有 N 条错误可参考」→ 模型只能编。待 T1 修。
+- 遗留：`s04L_rubric.py` 的 prompt 正例 `"最终答案为7cm，与标准答案一致"`
+  教会了模型「与标准答案一致」句式；正例 `"列出...64卦名称，无遗漏"` 教出了全量悬崖项。待 T1 修。
 
 ## Key Design Decisions
 
