@@ -50,24 +50,70 @@ SYS = '''你是评分器。给定一道题、一份回答、一组评分准则�
 {"results": [{"idx": 1, "met": true, "evidence": "原文摘句，不超过80字", "reason": ""}]}
 idx 对应下方准则的编号，必须每条都给。'''
 
-# 程序化核验：把答案与回复都归一化后做包含匹配
-_NORM = re.compile(r'[\s　,，、;；:：\'"“”‘’()（）\[\]【】<>《》*`#\\]+')
+# 程序化核验。**原则：宁可不判，不可错判** —— 它的全部价值在于「判了就一定对」，
+# 做不到就退回 LLM。
+#
+# 旧实现（归一化后子串包含）两头都错，实测：
+#   q0303  正确答案是对抗回复的子串（对抗档末尾多加了 ",1"）→ 答错却判对
+#   q0048  answer 存的是整句话「将 host 配置为 0.0.0.0，例如 uvicorn ...」，
+#          强档回复写了 --host 0.0.0.0 但措辞不同 → 答对却判错，闸门项直接清零
+# 现在改为按 s05L 给出的 answer_kind 分策略，且只认 answer_canonical（最小可判定串）。
+_TRIM = re.compile(r'[\s　*`"\'“”‘’]+')
+_ZH_PUNCT = str.maketrans('，；：（）［］｛｝＜＞', ',;:()[]{}<>')
 
 
-def norm_ans(t):
-    return _NORM.sub('', str(t or '')).lower()
+def norm_txt(t):
+    """轻量归一：只统一空白、装饰符号和中英标点，**不删内容字符**。
 
-
-def check_program(ans, text):
-    """答案是否出现在回复里。返回 (可判定, 命中)。
-
-    只在答案足够特征化时才敢用：太短（如「3」）会在长文里随机命中，
-    这种交给 LLM 判。
+    旧版把逗号也删了，于是 `0,1,1,1` 和 `0111` 等价 —— 这类改动会让比对
+    失去意义。这里只做安全的规范化。
     """
-    a, t = norm_ans(ans), norm_ans(text)
-    if len(a) < 6:
+    return _TRIM.sub('', str(t or '').translate(_ZH_PUNCT)).lower()
+
+
+def check_program(kind, canon, text):
+    """按答案类型做比对。返回 (是否可判定, 是否命中)。
+
+    numeric/option —— 词边界匹配，避免 "3" 命中 "13"、"B" 命中 "Boc"
+    token          —— 短标识（IP、参数名、术语），只要在正文里出现过就算。
+                      它总是嵌在句子中间，不能用整行相等 —— 实测 q0048 的
+                      `0.0.0.0` 被误分成 exact_text，强档明明写了
+                      `--host 0.0.0.0` 却判未命中，闸门项 7 分被清零。
+    exact_text     —— **整行相等**，不是包含。多一个字符就算错，
+                      这正是 q0303 那种「末尾多加 ,1」要抓的情形
+    其余           —— 不可判定，交给 LLM
+    """
+    canon = (canon or '').strip()
+    if kind not in ('numeric', 'option', 'token', 'exact_text') or not canon:
         return False, False
-    return True, a in t
+
+    if kind == 'token':
+        # 太短的串（如 "1"、"是"）会随机命中，退回 LLM
+        if len(canon) < 3:
+            return False, False
+        return True, norm_txt(canon) in norm_txt(text)
+
+    if kind == 'exact_text':
+        want = norm_txt(canon)
+        if len(want) < 4:
+            return False, False
+        # 逐行比：回复里任意一行（或连续多行拼接）与答案完全相等才算命中
+        lines = [norm_txt(x) for x in re.split(r'[\r\n]+', text) if x.strip()]
+        if want in lines:
+            return True, True
+        # 答案本身多行时，按同样行数的滑窗拼接后比对
+        want_lines = [norm_txt(x) for x in re.split(r'[\r\n]+', canon) if x.strip()]
+        if len(want_lines) > 1:
+            k = len(want_lines)
+            for i in range(len(lines) - k + 1):
+                if lines[i:i + k] == want_lines:
+                    return True, True
+        return True, False
+
+    # numeric / option：词边界匹配
+    esc = re.escape(canon.strip())
+    pat = re.compile(rf'(?<![0-9A-Za-z.]){esc}(?![0-9A-Za-z.])', re.I)
+    return True, bool(pat.search(text))
 
 
 def build(r, resp, rubrics):
@@ -114,32 +160,57 @@ def main():
         resp = next(p for p in r['pool'] if p['tier'] == tier)
         rubrics = rubrics_of(r)
 
-        # 1) 先做程序化核验：gated_answer 的答案项（is_gate 那条）
+        # 1) 先做程序化核验：只对 gated_answer 的**唯一**闸门项，且答案可比对时。
+        #    要求唯一：闸门被拆成「规则对不对」+「条目全不全」两条后，
+        #    拿同一个答案串比两次必然得到相同结果，对第二条毫无意义。
         prog = {}
-        ans = (r.get('answer') or '').strip()
-        if r.get('rubric_form') == 'gated_answer' and ans and r.get('answer_sound', True):
+        kind = r.get('answer_kind', 'none')
+        canon = (r.get('answer_canonical') or '').strip()
+        if (r.get('rubric_form') == 'gated_answer' and canon
+                and r.get('answer_sound', True)):
             pos = [c for c in rubrics if c['is_positive']]
-            if pos:
-                s_max = sum(c['score'] for c in pos)
-                for i, c in enumerate(rubrics, 1):
-                    if (c['is_positive'] and c['score'] >= 4
-                            and s_max and c['score'] / s_max >= 0.3):
-                        ok, hit = check_program(ans, resp['text'])
-                        if ok:
-                            prog[i] = hit
+            s_max = sum(c['score'] for c in pos) if pos else 0
+            gates = [i for i, c in enumerate(rubrics, 1)
+                     if c['is_positive'] and c['score'] >= 4
+                     and s_max and c['score'] / s_max >= 0.3]
+            if len(gates) == 1:
+                ok, hit = check_program(kind, canon, resp['text'])
+                if ok:
+                    prog[gates[0]] = hit
 
-        # 2) 其余交给 LLM
-        obj, _ = stage.json_call(m, build(r, resp, rubrics), stage='s12L', thinking=THINK)
+        # 2) 其余交给 LLM。缺项要重试 —— 静默判 false 会把「模型漏答」
+        #    算成「回复不满足」，直接扭曲得分率。
+        msgs = build(r, resp, rubrics)
+        need = {i for i in range(1, len(rubrics) + 1) if i not in prog}
         got = {}
-        for x in (obj.get('results') or []):
-            if isinstance(x, dict) and isinstance(x.get('idx'), int):
-                got[x['idx']] = x
+        for attempt in range(2):
+            obj, _ = stage.json_call(m, msgs, stage='s12L', thinking=THINK)
+            for x in (obj.get('results') or []):
+                if isinstance(x, dict) and isinstance(x.get('idx'), int):
+                    got[x['idx']] = x
+            miss = sorted(need - set(got))
+            if not miss:
+                break
+            if attempt == 0:
+                msgs = msgs + [
+                    {'role': 'assistant', 'content': json.dumps(
+                        {'results': list(got.values())}, ensure_ascii=False)[:1500]},
+                    {'role': 'user', 'content':
+                        f'你漏了第 {miss} 条准则的判定。请**只输出**这些编号的结果，'
+                        f'格式同前：{{"results": [{{"idx": N, "met": ..., '
+                        f'"evidence": "...", "reason": "..."}}]}}'}]
+
+        missing = sorted(need - set(got))
 
         items, score = [], 0
         for i, c in enumerate(rubrics, 1):
             g = got.get(i) or {}
             if i in prog:
-                met, ev, why, byp = prog[i], '', '程序化核验：答案字符串匹配', True
+                met, ev, byp = prog[i], '', True
+                why = f'程序化核验（{kind}）：{"命中" if met else "未命中"} {canon[:60]}'
+            elif i in missing:
+                # 判分器两轮都没返回这条 —— 标出来，不要当成「未满足」悄悄扣分
+                met, ev, why, byp = False, '', '⚠️ 判分器未返回该条，非回复问题', False
             else:
                 met = bool(g.get('met'))
                 ev = str(g.get('evidence', ''))[:200]
@@ -154,14 +225,14 @@ def main():
                           'is_positive': c['is_positive'], 'score': c['score'],
                           'dimension': c['dimension'], 'met': met,
                           'evidence': ev, 'reason': why, 'by_program': byp,
-                          'is_gate': bool(i in prog)})
-        return rid, tier, items, score
+                          'judge_missing': i in missing})
+        return rid, tier, items, score, missing
 
     done, errs = stage.run(one, jobs, workers=WORKERS, desc='s12L')
 
     agg = defaultdict(dict)
-    for rid, tier, items, score in done:
-        agg[rid][tier] = {'items': items, 'score': score}
+    for rid, tier, items, score, missing in done:
+        agg[rid][tier] = {'items': items, 'score': score, 'missing': missing}
 
     res = []
     for r in recs:
@@ -175,6 +246,8 @@ def main():
             scored[p['tier']] = {
                 'score': j['score'], 's_max': s_max,
                 'rate': round(j['score'] / s_max, 4) if s_max else 0.0,
+                'judge_incomplete': bool(j.get('missing')),
+                'n_missing': len(j.get('missing') or []),
                 'n_met': sum(1 for x in j['items'] if x['met'] and x['is_positive']),
                 'n_pos': len(pos),
                 'n_penalty': sum(1 for x in j['items'] if x['met'] and not x['is_positive']),
@@ -194,6 +267,11 @@ def main():
                  if x['reason'].startswith('判 true 但未给证据'))
     if n_noev:
         print(f'  ⚠️  判 true 但无证据: {n_noev} 条，已按未满足处理')
+    inc = [(r['rid'], t, v['n_missing']) for r in res
+           for t, v in r['judged'].items() if v.get('judge_incomplete')]
+    if inc:
+        print(f'  ⚠️  判分器漏返回: {len(inc)} 处（重试后仍缺，非回复问题，'
+              f'得分率偏低）: ' + ', '.join(f'{a}/{b}({c})' for a, b, c in inc[:6]))
 
     print(f'\n  各档得分率（应当单调下降；不降就是 rubric 区分不开）:')
     for tier in ('strong', 'mid', 'trunc', 'cut', 'weak', 'adv'):
