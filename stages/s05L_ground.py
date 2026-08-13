@@ -63,12 +63,48 @@ SYS = f'''你在为一道题抽取「锚点」——即一份实际回答里**�
 没有唯一答案的开放题，`answer` 填空串。
 这个字段最重要 —— 下游写「最终答案为 X」这类准则时直接引用它，不再凭记忆编。
 
+【answer_kind / answer_canonical：给程序化核验用，判错代价很大，从严】
+下游会拿 `answer_canonical` 去和待评回答做**字符串比对**来自动判分，不过模型。
+比对错了会把正确回答判成错、或把错误回答判成对，所以**宁可留空也不要勉强填**。
+
+  answer_kind 从下列里选：
+    numeric     纯数值结论（含单位也算）。例：`7cm`、`38`、`1.5×10^3 Pa`
+    option      选择题选项。例：`B`、`AC`
+    token       **嵌在句子里的短标识**：IP、参数值、配置项、函数名、术语。
+                例：`0.0.0.0`、`--host`、`O(n log n)`、`NaHCO3`
+                判定方式是「回答里出现过这个串」，所以它必须足够特征化 ——
+                像 `1`、`是`、`true` 这种到处都会出现的，改填 none
+    formula     化学式/SMILES/数学表达式 —— 这类有多种等价写法，**不做程序化比对**
+    exact_text  **整段必须逐字一致**的输出：解码结果、程序输出、完整命令行。
+                判定方式是「回答里有一整行（或连续几行）与它完全相同」，
+                多一个字符少一个字符都算错。
+                ⚠️ 只有当答案本身就是「一段要照抄的文本」时才用它。
+                如果答案是嵌在说明里的短标识（如 `0.0.0.0`），用 token，
+                否则会因为它总是出现在句子中间而永远判不中。
+    none        开放题，或答案是一句话/一段描述，无法用字符串判定
+
+  answer_canonical：**最小的、能唯一判定对错的那个串**，不要带解释性文字。
+    ✅ `0.0.0.0`                    （问「配什么 IP」）
+    ✅ `Test_SR:00001.020486R\nWrite_IO:0,1,1,1,0,0,0,0,0,0,0,0,0,0,0`
+    ❌ `将 host 配置为 0.0.0.0，例如 uvicorn main:app --host 0.0.0.0`
+       ← 这是一句话，不同回答措辞不同，逐字比对必然误判
+    kind 为 formula 或 none 时，`answer_canonical` 一律填空串。
+
+  判断标准：如果你无法确定「另一份同样正确的回答里，这个串会原样出现」，
+  就把 kind 填 none。
+
 只输出 JSON：
 {{"anchors": [{{"point": "这份回答具体说了什么，不超过60字",
                "sound": true, "note": "若 sound=false，一句话说疑点"}}],
   "answer": "唯一答案；开放题留空",
   "answer_sound": true,
+  "answer_kind": "numeric|option|token|formula|exact_text|none",
+  "answer_canonical": "最小可判定串；formula/none 填空串",
   "gaps": ["该答但这份回答没覆盖的方面，不超过30字"]}}'''
+
+# 只有这两类做程序化比对。formula 等价写法太多（SMILES 可以有多种合法表示），
+# none 是自然语言，都退回 LLM 判分。
+PROGRAM_KINDS = ('numeric', 'option', 'token', 'exact_text')
 
 
 def anchor_of(r):
@@ -127,10 +163,23 @@ def main():
                               'anchor_missing': True}
         obj, _ = stage.json_call(m, build(r, txt), stage='s05L', thinking=THINK)
         anchors, gaps = parse(obj)
+
+        kind = str(obj.get('answer_kind', 'none') or 'none').strip().lower()
+        if kind not in ('numeric', 'option', 'token', 'formula', 'exact_text', 'none'):
+            kind = 'none'
+        canon = str(obj.get('answer_canonical', '') or '').strip()[:300]
+        # 兜底：模型可能填了 formula/none 却仍给 canonical，或反过来。
+        # 判错代价大，这里从严 —— 不属于可比对类型就清空，避免下游误用。
+        if kind not in PROGRAM_KINDS:
+            canon = ''
+        elif not canon:
+            kind = 'none'
+
         return r['rid'], {
             'anchors': anchors, 'gaps': gaps,
             'answer': str(obj.get('answer', ''))[:300],
             'answer_sound': bool(obj.get('answer_sound', True)),
+            'answer_kind': kind, 'answer_canonical': canon,
             'anchor_key': key, 'anchor_shared': shared, 'anchor_missing': False}
 
     done, errs = stage.run(one, recs, workers=WORKERS, desc='s05L')
@@ -147,6 +196,10 @@ def main():
     print(f'  锚点/题     : min={min(na)} max={max(na)} mean={sum(na) / len(na):.1f}')
     print(f'  有唯一答案  : {sum(1 for r in res if r.get("answer"))} 题'
           f'（下游写「最终答案为X」时直接引用，不再凭记忆）')
+    kinds = Counter(r.get('answer_kind', 'none') for r in res)
+    n_prog = sum(1 for r in res if r.get('answer_canonical'))
+    print(f'  answer_kind : ' + '  '.join(f'{k}={v}' for k, v in kinds.most_common()))
+    print(f'  可程序化核验: {n_prog} 题（其余走 LLM 判分，避免字符串比对误判）')
     unsound = sum(1 for r in res for a in (r.get('anchors') or []) if not a['sound'])
     print(f'  存疑锚点    : {unsound} 条（sound=false，下游避免写成准则）')
     print(f'  gaps        : {sum(len(r.get("gaps") or []) for r in res)} 条'

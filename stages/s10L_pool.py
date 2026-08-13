@@ -44,6 +44,8 @@ OUT = os.environ.get('RP_S10L_OUT', 's10L_pool.jsonl')
 TRUNC_RATIO = float(os.environ.get('RP_TRUNC', 0.4))
 # cut 档至少要删掉这么多，否则视为造法失效（实测模型常只删 1%-3%）
 MIN_CUT = float(os.environ.get('RP_MIN_CUT', 0.08))
+# strong 档短于此视为退化，不能当上界参照（实测 q0007 的 strong 只有 48 字）
+MIN_STRONG = int(os.environ.get('RP_MIN_STRONG', 200))
 
 SYS_MID = '''你在回答一道题。请给出一个**中等质量**的回答：
 主要结论基本正确，覆盖题目的主干，但不做深入展开、不补充边界条件和例外情形。
@@ -94,17 +96,40 @@ SYS_ADV_OPEN = '''你要造一份**对抗性回答**，用来测试评分标准�
 
 
 def strong_of(r):
-    """强档 = 现成回复里排除锚定那条。硬约束第 1 条：待评 ≠ 锚。"""
+    """强档 = 现成回复里排除锚定那条。硬约束第 1 条：待评 ≠ 锚。
+
+    多条候选时取**最长**的那条：strong 是所有比较的上界参照，
+    实测 q0007 的 gpt55 回复只有 48 字（锚 656 字），拿 48 字当上界，
+    弱档轻易追平，Hackable 判定失真。
+    """
     refs = r.get('ref_responses') or {}
     anchor = r.get('anchor_key', '')
     keys = [k for k in sorted(refs) if k != anchor]
     if keys:
-        return keys[0], str(refs[keys[0]] or ''), False
+        k = max(keys, key=lambda x: len(str(refs[x] or '')))
+        return k, str(refs[k] or ''), False
     # 单回复题：只能与锚共用，显式标记，不静默降级
     keys = sorted(refs)
     if keys:
         return keys[0], str(refs[keys[0]] or ''), True
     return '', '', False
+
+
+def strong_degenerate(r, strong):
+    """strong 档是否退化到不能当上界参照。返回 (是否退化, 原因)。
+
+    退化的 strong 会让弱档轻易追平，Hackable 被大面积误报。
+    诊断侧据此跳过该题，而不是给出一个假的结论。
+    """
+    n = len(strong.strip())
+    if n < MIN_STRONG:
+        return True, f'strong 仅 {n} 字，短于下限 {MIN_STRONG}'
+    refs = r.get('ref_responses') or {}
+    ak = r.get('anchor_key', '')
+    na = len(str(refs.get(ak) or ''))
+    if na and n * 2 < na:
+        return True, f'strong {n} 字 < 锚 {na} 字的一半，锚才是更好的回答'
+    return False, ''
 
 
 def truncate(t, ratio=TRUNC_RATIO):
@@ -203,8 +228,10 @@ def main():
         add('adv', gen.get((r['rid'], 'adv'), ''),
             '对抗：答案错但过程完整' if ver else '对抗：面面俱到但都很浅')
 
+        deg, why = strong_degenerate(r, strong)
         res.append({**r, 'pool': pool, 'pool_shared': shared,
-                    'pool_strong_key': key})
+                    'pool_strong_key': key,
+                    'strong_degenerate': deg, 'strong_degenerate_reason': why})
 
     stage.write_jsonl(OUT, res)
 
@@ -227,6 +254,13 @@ def main():
     if deg:
         print(f'  ⚠️  cut 档失效 {len(deg)} 题（删得太少，已标 degraded，'
               f'诊断侧会排除）: ' + ', '.join(f'{r}({x:.1%})' for r, x in deg[:8]))
+
+    sd = [(r['rid'], r['strong_degenerate_reason']) for r in res
+          if r.get('strong_degenerate')]
+    if sd:
+        print(f'\n  ⚠️  strong 档退化 {len(sd)} 题（不能当上界参照，诊断侧跳过）:')
+        for rid, why in sd:
+            print(f'    {rid}: {why}')
 
     # 长度梯度：弱档该明显短于强档，否则「弱」没造出来
     print(f'\n  平均长度（字）:')
