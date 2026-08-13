@@ -1,14 +1,12 @@
-"""步骤 2：上下文标签抽取 + R⁰_h（根节点 → ℓ=1 层 Scenarios）。
+"""步骤 6a：第二生成器上下文 - 使用 deepseek 独立生成 context。
 
-流程位置见 docs/design/rubric_pipeline_feishu_v2.md §2。
+这是 Phase 3 多模型聚合的第一步。使用第二个生成器（deepseek）独立跑一遍
+s02 的逻辑，生成另一组 intent + scenarios。
 
-两个上下文标签（intent、隐性约束）不是产出物，是**下一步展开的输入**：
-Scenarios 必须从 intent + 隐性约束推出，而不是从 query 字面直接联想，
-否则展开会退化成对题面关键词的同义改写。
-
-scenario_id 由代码按 `{rid}-s{序号}` 生成，不交给模型。第 4 步的血缘标签、
-第 13 步按视角聚合、第 14 步回灌到第 3 步全靠它，模型自造的 id 不稳定，
-换一次 prompt 就全对不上了。
+与 s02 的区别：
+- 强制使用 deepseek 模型（不从 RP_M_GEN 读取）
+- 输出到 s06_alt_context.jsonl
+- 支持从环境变量指定输入文件（用于 Phase 1 验证）
 """
 import os, sys
 from collections import Counter
@@ -16,8 +14,10 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
-WORKERS = int(os.environ.get('RP_WORKERS', 8))
-THINK = stage.envflag('RP_THINK', True)           # 展开需要推理，默认开
+WORKERS = int(os.environ.get('RP_WORKERS', 20))
+THINK = stage.envflag('RP_THINK', True)
+IN = os.environ.get('RP_S06_IN', 's01_filter.jsonl')
+OUT = os.environ.get('RP_S06A_OUT', 's06_alt_context.jsonl')
 N_MIN, N_MAX = 2, 4
 
 SYS = f'''你在为一道题构建评估标准的第一层结构。分两件事做。
@@ -57,44 +57,46 @@ def build(r):
 
 
 def main():
-    m = stage.pick('RP_M_GEN', 'generator')
-    recs = [r for r in stage.read_jsonl('s01_filter.jsonl') if r['verdict'] != '弃用']
-    print(f'步骤 2 上下文+R⁰_h: {len(recs)} 条（已排除弃用）, 模型={m.name}, thinking={THINK}')
+    # 通过环境变量 RP_M_ALT 指定模型（默认 deepseek）
+    # 如果未设置，使用 'generator' 角色的第二个模型
+    m = stage.pick('RP_M_ALT', 'generator')
+
+    recs = [r for r in stage.read_jsonl(IN) if r.get('verdict') != '弃用']
+    print(f'步骤 6a 第二生成器上下文: {len(recs)} 条 (from {IN})')
+    print(f'  模型: {m.name}, thinking={THINK}')
 
     def work(r):
-        obj, meta = stage.json_call(m, build(r), stage='s02', thinking=THINK)
+        obj, meta = stage.json_call(m, build(r), stage='s06a', thinking=THINK)
         scs = obj.get('scenarios') or []
         if not isinstance(scs, list) or not scs:
             raise ValueError(f'{r["rid"]} 没拆出 scenarios')
         out = []
         for i, s in enumerate(scs[:N_MAX]):
-            if isinstance(s, str):                # 容忍模型退化成字符串数组
+            if isinstance(s, str):
                 s = {'name': s, 'desc': ''}
-            out.append({'scenario_id': f'{r["rid"]}-s{i + 1}',   # id 由代码定，不信模型
+            out.append({'scenario_id': f'{r["rid"]}-alt-s{i + 1}',  # alt- 标记来自第二生成器
                         'name': str(s.get('name', ''))[:40],
                         'desc': str(s.get('desc', ''))[:120]})
         ic = obj.get('implicit_constraints') or {}
-        return {**r, 'intent': obj.get('intent', ''),
-                'implicit_constraints': {k: str(ic.get(k, ''))[:80]
-                                         for k in ('audience', 'format', 'risk_boundary')},
-                'scenarios': out, '_meta': meta}
+        return {**r, 'intent_alt': obj.get('intent', ''),
+                'implicit_constraints_alt': {k: str(ic.get(k, ''))[:80]
+                                            for k in ('audience', 'format', 'risk_boundary')},
+                'scenarios_alt': out, '_meta': meta}
 
-    out, _ = stage.run(work, recs, workers=WORKERS, desc='s02')
+    out, _ = stage.run(work, recs, workers=WORKERS, desc='s06a')
     stage.stat_cached([r.pop('_meta') for r in out])
-    stage.write_jsonl('s02_context.jsonl', out)
+    stage.write_jsonl(OUT, out)
 
-    ns = [len(r['scenarios']) for r in out]
-    names = Counter(s['name'] for r in out for s in r['scenarios'])
-    print('\n=== 步骤 2 结果 ===')
+    ns = [len(r['scenarios_alt']) for r in out]
+    names = Counter(s['name'] for r in out for s in r['scenarios_alt'])
+    print('\n=== 步骤 6a 结果 ===')
     print(f'  场景数/题     : {dict(sorted(Counter(ns).items()))}  (均值 {sum(ns) / max(len(ns), 1):.1f})')
-    print(f'  场景名去重    : {len(names)} / {sum(ns)}  '
-          f'(去重率低说明展开在套模板，是 R_h 失效的早期信号)')
+    print(f'  场景名去重    : {len(names)} / {sum(ns)}')
     print(f'  最常见场景名  : {names.most_common(5)}')
-    print(f'  风险边界非空  : {sum(1 for r in out if "无特殊风险" not in r["implicit_constraints"]["risk_boundary"])}')
     print('\n  抽样两条：')
     for r in out[:2]:
-        print(f'    {r["rid"]} intent: {r["intent"][:56]}')
-        for s in r['scenarios']:
+        print(f'    {r["rid"]} intent_alt: {r["intent_alt"][:56]}')
+        for s in r['scenarios_alt']:
             print(f'      {s["scenario_id"]}  {s["name"]}: {s["desc"][:44]}')
 
 

@@ -1,6 +1,6 @@
 """模型端点配置：加载 config/models.json、按角色取模型、校验异质性硬约束。
 
-约束出处见 CLAUDE.md「Critical Constraints」与 docs/PLAN.md §1：
+约束出处见 CLAUDE.md「Critical Constraints」与 docs/design/PLAN.md §1：
   步骤 6  多模型聚合：需 ≥2 个 generator 且 family 互异（同系列共享盲区）
   步骤 11 RIFT 诊断  ：diagnoser 需异质组合
   步骤 12 判分       ：judge 的 family 必须不同于所有 generator（避免自偏好偏差）

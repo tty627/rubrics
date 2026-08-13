@@ -1,6 +1,6 @@
 """步骤 4：准则实例化 —— 把每个视角展开成 1-3 条二元准则（Binary Descriptor）。
 
-流程位置见 docs/rubric_pipeline_feishu_v2.md §4。视角（perspective）是抽象的评价着眼点
+流程位置见 docs/design/rubric_pipeline_feishu_v2.md §4。视角（perspective）是抽象的评价着眼点
 （如「反应机理的立体选择性判断是否正确」），准则（criterion）是可操作的二元判断
 （「回答是否明确指出了主产物的R/S构型」←→「未指出或指错构型」）。
 
@@ -23,7 +23,10 @@ from lib import stage
 
 WORKERS = int(os.environ.get('RP_WORKERS', 6))
 THINK = stage.envflag('RP_THINK', True)
-SRC = os.environ.get('RP_S03_OUT', 's03b_merged_hybrid.jsonl')
+# 优先从 s03c (带dimension) 读取，否则回退到 s03b
+SRC = os.environ.get('RP_S03_OUT',
+                     's03c_dimensioned.jsonl' if os.path.exists(stage._path('s03c_dimensioned.jsonl'))
+                     else 's03b_merged_hybrid.jsonl')
 
 SYS = '''你在把一个评价视角展开成 1-3 条二元准则。
 
@@ -71,23 +74,18 @@ def main():
 
     def work(r):
         out = []
-        for p in r['perspectives']:
-            obj, _ = stage.json_call(m, build(r, p), stage='s04', thinking=THINK)
-            cri = obj.get('criteria') or []
-            if not isinstance(cri, list):
-                cri = []
-            for i, c in enumerate(cri[:3]):
-                if not isinstance(c, dict):
-                    continue
-                out.append({'criterion_id': f'{r["rid"]}-c{len(out) + 1}',
-                            'perspective_id': p.get('perspective_id', ''),
-                            'scenario_id': p.get('scenario_id', ''),
-                            'block_id': p.get('block_id', ''),
-                            'positive': str(c.get('positive', ''))[:200],
-                            'negative': str(c.get('negative', ''))[:200],
-                            'rationale': str(c.get('rationale', ''))[:120],
-                            'score': WEIGHT_MAP.get(p.get('weight_hint'), 5)})
-        return {**r, 'criteria': out, 'criteria_raw_perspectives': len(r['perspectives'])}
+        for c in cri[:3]:
+            if not isinstance(c, dict):
+                continue
+            out.append({'perspective_id': p.get('perspective_id', ''),
+                        'scenario_id': p.get('scenario_id', ''),
+                        'block_id': p.get('block_id', ''),
+                        'dimension': p.get('dimension', ''),  # 新增：传递维度字段
+                        'positive': str(c.get('positive', ''))[:200],
+                        'negative': str(c.get('negative', ''))[:200],
+                        'rationale': str(c.get('rationale', ''))[:120],
+                        'score': WEIGHT_MAP.get(p.get('weight_hint'), 5)})
+        return r['rid'], out
 
     res, _ = stage.run(work, recs, workers=WORKERS, desc='s04')
     stage.write_jsonl('s04_criteria.jsonl', res)

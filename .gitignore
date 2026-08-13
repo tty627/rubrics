@@ -4,12 +4,18 @@ cache/
 
 # 中间产物与最终交付的 xlsx，不入库
 data/
-reports/
+outputs/
+logs/
 *.xlsx
 !docs/**/*.xlsx
 
-# 模型端点配置含 api_key，不入库
+# 流水线运行态
+.pipeline_state.json
+
+# 模型端点配置含 api_key，不入库。用通配盖住 .bak/.old 等副本
 config/models.json
+config/models.json.*
+!config/models.json.example
 
 # Python
 __pycache__/

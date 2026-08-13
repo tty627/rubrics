@@ -1,6 +1,6 @@
 """步骤 7：难度演化 —— analytic 题在 R_base（优秀回答标准）上补增量准则 R_dist。
 
-流程位置见 docs/rubric_pipeline_feishu_v2.md §7。这一步只对 analytic 形态生效，
+流程位置见 docs/design/rubric_pipeline_feishu_v2.md §7。这一步只对 analytic 形态生效，
 其他两种形态（gated_answer / multi_part）无需难度演化，直通。
 
 **为什么要难度演化**：Qworld §3.3 区分了 R_base（什么算优秀）和 R_dist（区分梯度）。
@@ -23,6 +23,7 @@ from lib import stage
 
 WORKERS = int(os.environ.get('RP_WORKERS', 6))
 THINK = stage.envflag('RP_THINK', True)
+IN = os.environ.get('RP_S04_OUT', 's04_criteria.jsonl')  # 支持从 s05_grounded 读取
 
 SYS = '''你在为一道题补充**难度区分准则**（R_dist）。
 
@@ -58,10 +59,10 @@ def build(r):
 
 def main():
     m = stage.pick('RP_M_GEN', 'generator')
-    recs = stage.read_jsonl('s04_criteria.jsonl')
+    recs = stage.read_jsonl(IN)
     analytic = [r for r in recs if r['rubric_form'] == 'analytic']
     others = [r for r in recs if r['rubric_form'] != 'analytic']
-    print(f'步骤 7 难度演化: {len(recs)} 条, analytic={len(analytic)} 其他={len(others)}, '
+    print(f'步骤 7 难度演化: {len(recs)} 条 (from {IN}), analytic={len(analytic)} 其他={len(others)}, '
           f'模型={m.name}, thinking={THINK}')
 
     def work(r):
