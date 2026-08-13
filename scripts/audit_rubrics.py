@@ -125,13 +125,18 @@ def audit(path):
         [(r, c) for r, c in neg if OVERFIT_NEG.search(c['criteria'])],
         '过拟合参考错误，答成别的就逃掉')
 
-    # verifiable 答案项占比
+    # verifiable 答案项占比。
+    # 口径按 is_gate 而非 dimension=='答案准确性'：s04Lb 拆悬崖项时会把一条
+    # +8 拆成「规则对不对」+「条目全不全」，后者常落到「要点完整性」维度，
+    # 但它仍是答案判据的一半。只认单一维度会把拆分误报成占比下降。
     ver = [r for r in recs if r.get('question_type') == 'verifiable' and r.get('full_mark')]
     if ver:
         ratios = []
         for r in ver:
-            a = sum(c['score'] for c in r['rubrics']
-                    if c.get('is_positive') and c.get('dimension') == '答案准确性')
+            a = sum(c['score'] for c in r['rubrics'] if c.get('is_gate'))
+            if not a:      # 没标闸门的（如 multi_part 路由）退回按维度算
+                a = sum(c['score'] for c in r['rubrics']
+                        if c.get('is_positive') and c.get('dimension') == '答案准确性')
             ratios.append(a / r['full_mark'])
         off = sum(1 for x in ratios if not 0.6 <= x <= 0.8)
         print(f'  {"❌" if off > len(ver) * 0.2 else "✅"} '
