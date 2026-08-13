@@ -1,6 +1,6 @@
 """步骤 1：入口过滤 —— 真人 query 甄别 + 缺陷判定（改写 / 弃用）。
 
-流程位置见 docs/rubric_pipeline_feishu_v2.md §1。产出填 xlsx 的 A、B 两列。
+流程位置见 docs/design/rubric_pipeline_feishu_v2.md §1。产出填 xlsx 的 A、B 两列。
 
 种子集上的两点偏离，都是数据本身决定的：
 1. **真人甄别跳过**。该判定的强特征是 eval_sample_prob=0.1，种子集没有这一列，

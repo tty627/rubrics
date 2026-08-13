@@ -1,6 +1,6 @@
 """步骤 11：RIFT 免池诊断 —— Subjective / Non-Atomic / Ungrounded。
 
-流程位置见 docs/rubric_pipeline_feishu_v2.md §11。RIFT 有 5 个失效模式，
+流程位置见 docs/design/rubric_pipeline_feishu_v2.md §11。RIFT 有 5 个失效模式，
 其中 3 个可以在没有回复池的情况下诊断（Phase 1-2 用这个），另外 2 个
 （Redundant / Conflict）需要回复池，留到 Phase 3 再做。
 

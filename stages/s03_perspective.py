@@ -1,9 +1,9 @@
 """步骤 3：Perspective Elicitation —— RET 的 R_h（层次展开）+ R_w（水平展开）。
 
-流程位置见 docs/rubric_pipeline_feishu_v2.md §3。**这一步是维度多样性的唯一来源**：
+流程位置见 docs/design/rubric_pipeline_feishu_v2.md §3。**这一步是维度多样性的唯一来源**：
 种子集 2765 条准则的维度去重数只有 1，病根就在没有这一层。
 
-三种执行策略（RP_RET 切换），对应 docs/PLAN.md §3.1 那个待拍板的选择：
+三种执行策略（RP_RET 切换），对应 docs/design/PLAN.md §3.1 那个待拍板的选择：
   batch    一次调用出整棵树，R_w 退化成 prompt 里一句「请覆盖全面」  ~1 次/题
   hybrid   R_h 批量、R_w 忠实（ℓ=1 与 ℓ=2 分别单独调用）           ~5-6 次/题
   faithful 每个树操作一次调用                                      ~9-12 次/题
@@ -25,9 +25,9 @@ from lib import stage
 
 WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)
-STRATEGY = os.environ.get('RP_RET', 'hybrid')      # batch | hybrid | faithful
-W1 = int(os.environ.get('RP_W1', 1))               # ℓ=1 水平展开轮数
-W2 = int(os.environ.get('RP_W2', 1))               # ℓ=2 水平展开轮数
+STRATEGY = os.environ.get('RP_RET', 'hybrid')      # batch | hybrid | faithful | lean
+W1 = int(os.environ.get('RP_W1', 1))               # ℓ=1 水平展开轮数（lean 下恒 0）
+W2 = int(os.environ.get('RP_W2', 1))               # ℓ=2 水平展开轮数（lean 下恒 0）
 OUT = os.environ.get('RP_S03_OUT', f's03_perspective_{STRATEGY}.jsonl')
 SIM = 0.7                                          # 视角名去重的字符 Jaccard 阈值
 
@@ -91,6 +91,25 @@ SYS_BATCH = f'''你在为一道题构建评估标准的完整视角树。给定�
 只输出 JSON：{{"expand": [{{"scenario_index": 0, "perspectives": [{{"name": "...", "desc": "..."}}]}}]}}
 scenario_index 是场景在输入清单中的序号，从 0 开始。每个场景 2-4 个评价轴。'''
 
+# lean：只保留「该答到什么」的骨架轴。与 SYS_BATCH 的差别是数量收紧到 1-2、
+# 且去掉「覆盖全面」自查——那句自查是膨胀的主要来源之一（它鼓励模型补边角）。
+# 实测 hybrid 下 R_w 净增 61% 视角、最终 30.5 条准则/题，远超 §2.5 给的 5-8 条目标。
+SYS_LEAN = f'''你在为一道题构建评估标准。给定若干评价场景，
+为每一个场景拆出**最核心**的评价轴。
+
+{_COMMON}
+
+【只要骨架】
+判据是一句话：「一份回答如果在这一轴上不合格，它还算合格吗？」
+- 不合格 → 这是骨架轴，保留
+- 仍合格 → 是细节加分项，不要输出
+
+**每个场景只出 1-2 个轴**。宁少不多：全题的轴最终会变成 6-8 条准则，
+轴太多会逼出过细的准则。不要为了覆盖边角而硬凑。
+
+只输出 JSON：{{"expand": [{{"scenario_index": 0, "perspectives": [{{"name": "...", "desc": "..."}}]}}]}}
+scenario_index 是场景在输入清单中的序号，从 0 开始。'''
+
 
 def _norm(s):
     return set(re.sub(r'[\s，。、（）()的与和]', '', s or ''))
@@ -132,9 +151,10 @@ class Ctr:
 def expand_units(m, r, units, c):
     """把 ℓ=1 单元（场景或 block）展开成视角。units: [{'id','name','desc'}]"""
     got = {u['id']: [] for u in units}
-    if STRATEGY == 'batch' or (STRATEGY == 'hybrid' and len(units) > 1):
+    sys_prompt = SYS_LEAN if STRATEGY == 'lean' else SYS_BATCH
+    if STRATEGY in ('batch', 'lean') or (STRATEGY == 'hybrid' and len(units) > 1):
         lst = '\n'.join(f'{i}. {u["name"]}：{u["desc"]}' for i, u in enumerate(units))
-        obj = c.call(m, [{'role': 'system', 'content': SYS_BATCH},
+        obj = c.call(m, [{'role': 'system', 'content': sys_prompt},
                          {'role': 'user', 'content': f'{_ctx(r)}\n\n【评价场景】\n{lst}'}])
         for e in obj.get('expand') or []:
             i = e.get('scenario_index')
@@ -211,12 +231,12 @@ def work(m, r):
     elif form == 'analytic':
         units = [{'id': s['scenario_id'], 'name': s['name'], 'desc': s['desc']}
                  for s in r['scenarios']]
-        persp = ret(m, r, units, c, run_rw=STRATEGY != 'batch')
+        persp = ret(m, r, units, c, run_rw=STRATEGY not in ('batch', 'lean'))
     else:                                          # multi_part：block 充当 ℓ=1 单元
         persp = []
         open_units = [{'id': b['block_id'], 'name': b['desc'], 'desc': b['desc']}
                       for b in r['blocks'] if b['block_type'] == 'open']
-        persp += ret(m, r, open_units, c, run_rw=STRATEGY != 'batch')
+        persp += ret(m, r, open_units, c, run_rw=STRATEGY not in ('batch', 'lean'))
         for b in r['blocks']:
             if b['block_type'] == 'verifiable':     # 确定性 block 走 gated_answer 那套
                 persp += [dict(g, scenario_id=b['block_id'], origin='fixed') for g in GATED]
@@ -242,7 +262,7 @@ def work(m, r):
 
 def main():
     m = stage.pick('RP_M_GEN', 'generator')
-    recs = stage.read_jsonl('s02_5_route.jsonl')
+    recs = stage.read_jsonl(os.environ.get('RP_S03_SRC', 's02_5_route.jsonl'))
     print(f'步骤 3 视角展开: {len(recs)} 条, 模型={m.name}, 策略={STRATEGY}, '
           f'w1={W1} w2={W2}, thinking={THINK}')
 

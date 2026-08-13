@@ -16,11 +16,27 @@ Rubric 生成能力建设：基于学术论文实现的评估标准(rubric)自�
 
 2. **stages/** - 14 步流水线，每步独立读写 jsonl
    - 每步可单独重跑，不影响其他步骤
-   - 当前仅实现 Phase 0: `s00_seed.py` (xlsx → seed.jsonl + baseline.json)
+   - 已实现 s00-s09、s11、s11b（Phase 0-3）
 
 3. **config/** - 模型端点配置
    - `models.json`: 运行时配置，含 api_key，已在 .gitignore
    - `models.json.example`: 配置模板
+
+### 仓库布局（2026-08-12 整理后）
+
+```
+docs/
+  design/    流程定稿与实施计划（原 docs/ 根目录，路径已迁移）
+  advisor/   给导师看的展示材料
+  reports/   技术报告：审查、修复记录、phase 报告
+  dev/       开发笔记（暂空）
+outputs/
+  excel/     填充后的 xlsx 产出
+  samples/   样例展示
+scripts/     辅助脚本（quick_stats、fill_xlsx_preserve_format 等）
+```
+
+`scripts/` 下的脚本已改为基于 `__file__` 定位仓库根，可从任意目录调用。
 
 ### 数据流
 
@@ -55,7 +71,7 @@ RP_OUT=/path/to/output python3 stages/s00_seed.py
 
 ### Phase 1-4 (待实现)
 
-后续 phase 需要配置 `config/models.json`(见下文"模型端点配置")，详见 `docs/PLAN.md`。
+后续 phase 需要配置 `config/models.json`(见下文"模型端点配置")，详见 `docs/design/PLAN.md`。
 
 ## Development Workflow
 
@@ -86,7 +102,7 @@ RP_OUT=/path/to/output python3 stages/s00_seed.py
 ]
 ```
 
-**硬约束**(流程强制要求，见 `docs/PLAN.md` §1)：
+**硬约束**(流程强制要求，见 `docs/design/PLAN.md` §1)：
 - 步骤 6(多模型聚合): 需 ≥2 个 `generator`，且 `family` 不同(同系列共享盲区)
 - 步骤 11(RIFT 诊断): `diagnoser` 需异质组合(Gemini 系强于 Ungrounded/Subjective，GPT 系强于 Missing/Low Signal)
 - 步骤 12(判分): `judge` 的 `family` 必须不同于 `generator`(避免自偏好偏差)
@@ -135,7 +151,7 @@ python3 tools/watch.py --tokens # 展开 token 明细
 
 ## Critical Constraints
 
-以下五条违反即出错(详见 `docs/rubric_pipeline_full_v2.md` §3.3)：
+以下五条违反即出错(详见 `docs/design/rubric_pipeline_full_v2.md` §3.3)：
 
 1. **锚定回复 ≠ 待评回复**(步骤 5): 锚和待评同源会导致 rubric 从待评回复自身衍生
 2. **判分器 ≠ 生成器**(步骤 12): 同系列模型有自偏好偏差，判分虚高
@@ -145,15 +161,29 @@ python3 tools/watch.py --tokens # 展开 token 明细
 
 ## Implementation Status
 
-当前已完成：
-- ✅ Phase 0 数据层(s00_seed.py)
-- ✅ 基础库(xlsx.py, llm.py)
+当前已完成 Phase 0-3（452 条全量，约 96k 次调用）：
+- ✅ Phase 0 数据层(s00_seed.py) + 基础库(xlsx.py, llm.py)
+- ✅ Phase 1 试跑(20 条)：验证 RET 能导出多样视角
+- ✅ Phase 2 结构全量：步骤 1-4、7-9
+- ✅ Phase 3 多模型聚合(s06a/s06c/s06d/s06_aggregate) + RIFT 免池诊断(s11)
+- ✅ 步骤 5 Response Grounding(s05_grounding.py)：后补，drift 检查
+- ✅ 步骤 11b 诊断处置(s11b_remedy.py)：自动删除 defective 准则并重归一
 
-待实现(按优先级)：
-- Phase 1 试跑(20 条，约 400 次调用): 步骤 1-9(跳过 6、10、11 的需池项)
-- Phase 2 结构全量(453 条，约 9k-12k 次): 步骤 1-9 + 11 的免池诊断
-- Phase 3 多模型聚合 + RIFT(约 +10k-14k 次)
-- Phase 4 回复池 + 判分(约 +10k-15k 次)
+待实现：
+- Phase 4 回复池 + 判分(约 +10k-15k 次)：步骤 10、12、13、14
+
+**已修复的关键偏差**：
+1. **步骤 9 归一化** (`docs/reports/PIPELINE_FIX_COMPLETE.md`)：原先输出 s_max=18~374，未做最终归一。现固定 `s_max=100`、正向准则 normalized_score 之和恒为 100，`s_max_raw` 保留原始分母。这是「badcase 阈值可全局设一个」的前提。
+
+2. **步骤 4L rubrics 质量** (`docs/reports/RUBRICS_REVIEW_FINDINGS.md`, 2026-08-12)：
+   - ❌ **负向准则编造具体数值** (23题)：无参考错误时 LLM 编造具体字节/数值。修复：prompt 添加"禁止编造"约束 + 传递 ref_errors 信息
+   - ❌ **verifiable 答案项占比偏离** (21题)：答案项应占60-80%但实际21%-89%。修复：parse() 中添加自动调整逻辑，压缩其他准则到1分
+   - ⚠️  **准则表述空泛** (28题)：含"准确"、"完整"等空泛词。修复：扩展禁止词 + 添加反例/正例
+   - ⚠️  **未经 RIFT 诊断**：s04L 跳过了 s07/s08/s09，outputs/rubrics_advisor_lean.jsonl 绕过了诊断。修复：新增 s11L_diagnose.py + s11Lb_remedy.py 专门诊断 lean 流程
+
+   **影响范围**：65/452 题 (14.4%)，主要是 P0 级问题（破坏可判定性、稀释答案项权重）  
+   **修复状态**：✅ 代码已修改，待重新运行流程验证  
+   **实施指南**：`docs/reports/S04L_FIX_GUIDE.md`
 
 ## Key Design Decisions
 
@@ -169,14 +199,14 @@ python3 tools/watch.py --tokens # 展开 token 明细
 
 这是对三篇骨架论文的扩展(它们假定所有任务都是 open)。
 
-### RET 实现策略(`docs/PLAN.md` §3.1)
+### RET 实现策略(`docs/design/PLAN.md` §3.1)
 
 **建议**: R_h(层次展开)批量、R_w(水平展开「还漏了什么」)忠实。
 - 批量: 一次调用出场景+视角骨架 → 约 2 次/题
 - 忠实: R_w 单独调用，保住「覆盖全面性」的核心价值 → 约 5-6 次/题
 - Phase 1 会对比两种策略的维度数，择优
 
-### 单回复记录处理(`docs/PLAN.md` §3.2)
+### 单回复记录处理(`docs/design/PLAN.md` §3.2)
 
 种子集中 64 条只有 1 条参考回复(无法做锚定与待评分离)：
 - Phase 2/3(结构指标): 全部 453 条
@@ -184,9 +214,9 @@ python3 tools/watch.py --tokens # 展开 token 明细
 
 ## Documentation
 
-- `docs/rubric_pipeline_feishu_v2.md`: 流程定稿(14 步 + 题型判定)，简明版
-- `docs/rubric_pipeline_full_v2.md`: 完整版，含论文依据、推导过程、逐步出处对照
-- `docs/PLAN.md`: 在 453 条种子集上跑通全流程的分阶段实施计划，含成本估算与检查点
+- `docs/design/rubric_pipeline_feishu_v2.md`: 流程定稿(14 步 + 题型判定)，简明版
+- `docs/design/rubric_pipeline_full_v2.md`: 完整版，含论文依据、推导过程、逐步出处对照
+- `docs/design/PLAN.md`: 在 453 条种子集上跑通全流程的分阶段实施计划，含成本估算与检查点
 - `data/baseline.json`: 草稿 rubric 的基线结构指标(对照目标)
 
 ## Code Style

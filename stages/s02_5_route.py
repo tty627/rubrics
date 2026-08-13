@@ -1,6 +1,6 @@
 """步骤 2.5：题型判定与路由 —— verifiable / open / hybrid → rubric_form。
 
-流程位置见 docs/rubric_pipeline_feishu_v2.md §2.5。这一步是对三篇骨架论文的扩展，
+流程位置见 docs/design/rubric_pipeline_feishu_v2.md §2.5。这一步是对三篇骨架论文的扩展，
 它们都假定任务是 open（verifiable 交给 RLVR），我们要建统一能力所以在流程内分流。
 
 不分流的代价很具体：数学题被强行套多视角展开，会产出「推理严谨度」

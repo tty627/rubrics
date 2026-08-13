@@ -1,6 +1,6 @@
 """Phase 1 抽样：seed.jsonl → seed_phase1.jsonl（20 条）。
 
-抽样规则来自 docs/PLAN.md Phase 1：open/closed 按 7:3，且必须含
+抽样规则来自 docs/design/PLAN.md Phase 1：open/closed 按 7:3，且必须含
 1 条超短 query、1 条多子题、1 条非中文——这三类是检查点要盯的边界情形，
 随机抽 20 条大概率一条都抽不到。学科上做轮转，避免全落在理学+工学。
 

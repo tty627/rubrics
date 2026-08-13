@@ -1,6 +1,6 @@
 """步骤 8：惩罚项 —— 与正向准则互补的独立生成。
 
-流程位置见 docs/rubric_pipeline_feishu_v2.md §8。Qworld §3.4 要求惩罚项覆盖
+流程位置见 docs/design/rubric_pipeline_feishu_v2.md §8。Qworld §3.4 要求惩罚项覆盖
 「事实性错误、逻辑矛盾、幻觉、格式违规」等即使满足了全部正向准则仍可能犯的错。
 
 惩罚项与正向准则的区别：
