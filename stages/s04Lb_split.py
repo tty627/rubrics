@@ -83,6 +83,31 @@ SYS_SPLIT = f'''你在修一条评分准则。它被诊断为**非原子** —�
   {{"criteria": "...", "score": 1, "reason": "...", "dimension": "..."}}]}}
 若判定不该拆：{{"split": false, "reason": "为什么它其实是原子的，不超过40字"}}'''
 
+SYS_FACTFIX = f'''你在修一条评分准则。它被诊断为**事实错误** —— 准则里写死的答案、
+数值、结论或引用是错的。这类准则危害最大：它会把正确回答判成错、错误回答判成对。
+
+改写成 **1 条**，把内容改对。
+
+【硬约束】
+1. 分值不变。
+2. **优先采信【人工草稿准则】和题干给出的条件**。这两个是真值来源，
+   比你自己的记忆可靠。
+3. 如果你无法确定正确内容是什么 —— 这是常见情况，不要硬猜 ——
+   就把这条**降级成一个你能确定的、可核对的要求**。
+   例：原「最终答案为 k=5」不确定正确值时，
+       改成「给出 k 的具体数值并说明其满足最小性的依据」，
+       而不是换一个你也没把握的数字。
+   宁可弱一点，也绝不能写死一个新的错答案。
+4. 不要引入题目没问的内容。禁止空泛词（准确/完整/清晰/合理/充分/全面）。
+5. 保持 is_positive 与原准则一致。
+
+{dimensions.prompt_block()}
+
+只输出 JSON：
+{{"criteria": [{{"criteria": "不超过70字", "score": 2, "reason": "不超过30字",
+   "dimension": "从上表选"}}],
+  "confident": true, "note": "若不确定正确值而做了降级处理，一句话说明"}}'''
+
 SYS_REWRITE = f'''你在修一条评分准则。它有具体的质量缺陷，见下方【缺陷】。
 
 原地改写成 **1 条**（除非【缺陷】里明确要求拆成 2 条）。
@@ -137,6 +162,25 @@ def build_rewrite(r, c, flags):
          f'[{c["dimension"]}] {c["criteria"]}\n'
          f'【缺陷】\n{hints}\n')
     return [{'role': 'system', 'content': SYS_REWRITE}, {'role': 'user', 'content': u}]
+
+
+def build_factfix(r, c, q):
+    u = (ctx(r) +
+         f'\n【待改准则】{"+" if c["is_positive"] else "−"}{abs(c["score"])} '
+         f'[{c["dimension"]}] {c["criteria"]}\n'
+         f'【诊断认为错在哪】{q.get("diag_reason", "")}\n')
+    cv = (q.get('correct_value') or '').strip()
+    if cv:
+        u += f'【诊断给出的正确内容】{cv}\n'
+    if q.get('needs_review'):
+        u += ('\n⚠️ 诊断器是**凭自身知识**下的这个结论，没有真值依据，它可能记错。\n'
+              '请优先核对上方【人工草稿准则】和题干。若草稿/题干支持不了诊断的说法，'
+              '就按第 3 条做降级处理，不要照搬诊断给的值。\n')
+    else:
+        u += f'\n（诊断依据：{q.get("basis", "")}，比模型记忆可靠）\n'
+    if q.get('is_gate'):
+        u += '\n⚠️ 这是本题的**闸门项**（唯一正确答案的判据），必须保留答案判定的能力。\n'
+    return [{'role': 'system', 'content': SYS_FACTFIX}, {'role': 'user', 'content': u}]
 
 
 def norm(items, orig, n_want=None):
@@ -212,14 +256,16 @@ def main():
         for c in rubrics:
             cid = c.get('_criterion_id')
             flags = [k for k in FLAG_HINT if c.get(k)]
-            if cid in split_cids[r['rid']]:
-                cand.append((c, 'split', flags))
+            q = split_cids[r['rid']].get(cid)
+            if q:
+                # 队列里的 kind：factual 原地改写（不涨条数），split 拆成 2 条
+                cand.append((c, q.get('kind', 'split'), flags))
             elif flags:
                 cand.append((c, 'rewrite', flags))
         # 拆分会涨条数，超预算时优先拆分值高的
         cand.sort(key=lambda x: -abs(x[0]['score']))
         for c, kind, flags in cand:
-            grows = kind == 'split' or '_flag_cliff' in flags
+            grows = kind == 'split' or (kind == 'rewrite' and '_flag_cliff' in flags)
             if grows and room <= 0:
                 skipped.append((r['rid'], c['_criterion_id']))
                 c['_split_skipped'] = True
@@ -242,13 +288,30 @@ def main():
     def one(job):
         rid, cid, kind, flags = job
         r, c = by_rid[rid], cid2c[cid]
+        q = split_cids[rid].get(cid) or {}
+
+        if kind == 'factual':
+            obj, _ = stage.json_call(m, build_factfix(r, c, q),
+                                     stage='s04Lb', thinking=THINK)
+            new = norm(obj.get('criteria') or [], c, 1)
+            for x in new:
+                x['_factfix'] = True
+                x['_factfix_confident'] = bool(obj.get('confident', True))
+                if obj.get('note'):
+                    x['_factfix_note'] = str(obj['note'])[:120]
+                if q.get('needs_review'):
+                    x['_needs_review'] = True
+            return cid, new, ''
+
         if kind == 'split':
-            c = {**c, '_diag_reason': (split_cids[rid][cid].get('failure_modes') or [''])[0],
-                 'is_gate': split_cids[rid][cid].get('is_gate')}
+            c = {**c, '_diag_reason': q.get('diag_reason') or
+                 (q.get('failure_modes') or [''])[0],
+                 'is_gate': q.get('is_gate')}
             obj, _ = stage.json_call(m, build_split(r, c), stage='s04Lb', thinking=THINK)
             if not obj.get('split'):
                 return cid, None, obj.get('reason', '')          # 诊断误判，保留原条
             return cid, norm(obj.get('criteria') or [], c), ''
+
         obj, _ = stage.json_call(m, build_rewrite(r, c, flags), stage='s04Lb', thinking=THINK)
         n_want = 2 if '_flag_cliff' in flags else 1
         return cid, norm(obj.get('criteria') or [], c, n_want), ''

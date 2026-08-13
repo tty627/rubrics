@@ -72,6 +72,52 @@ SYS_UNGR = '''你是 RIFT 诊断器，检测准则是否**脱靶**（Ungrounded�
 
 只输出 JSON：{"verdict": "clean|defective", "reason": "若判 defective，一句话说为什么脱靶"}'''
 
+# 2026-08-13 新增第四个检测器。
+# 起因：实测 318 条 ungrounded 里至少 57 条（17.9%）的判由根本不是「超范畴」，
+# 而是「准则本身写错了」—— 模型把事实错误塞进了脱靶这个槽，因为 RIFT 原本的
+# 三个检测器没有一个管事实正确性：
+#   [q0073] 「最终答案为 k=5」→ 判由「公认答案应为 k=3，准则预设 k=5 属于事实错误」
+#   [q0049] 「反映125...K后的局面」→ 判由「第三局PGN中不存在125...K这一步」
+# 而且贴错标签会导致错误处置：ungrounded 的动作是删，但「答案写错了」该做的是
+# 用正确答案重写 —— 删了这道题就没有答案判据了。
+#
+# **关键约束**：只有这个检测器拿到真值（draft_rubric）。另外三个判的是形式不是
+# 事实，不需要真值 —— 这样它们 7356 次调用的缓存全部保住，只新增这一个模式的量。
+#
+# 诊断器自己会编：实测 q0045 同一题里，它给一条准则的判由说产物是三种，
+# 给另一条说仅两种，自相矛盾。所以强制它交代**判定依据从哪来**，
+# basis=model_knowledge 的结论在处置端降级为「待复核」而非直接改写。
+SYS_FACT = '''你是 RIFT 诊断器，检测准则陈述的内容**是否与事实不符**（Factually-Wrong）。
+
+事实错误准则：准则里写死的答案、数值、结论、引用是错的，或者引用了题目里
+根本不存在的东西。这类准则会把正确回答判成错、把错误回答判成对，危害最大。
+
+例：
+  - 题目答案实为 k=3，准则却写「最终答案为 k=5」← 事实错误
+  - 准则写「反映 125...K 后的局面」，但题目给的棋谱里没有这一步 ← 引用了不存在的内容
+  - 准则写「生成三种产物」，但该反应只生成两种 ← 事实错误
+
+【不属于本检测器的范围，一律判 clean】
+- 准则太空泛、太主观 → 那是 Subjective 管的
+- 准则捆了多个判断点 → 那是 Non-Atomic 管的
+- 准则说的是对的，只是题目没问 → 那是 Ungrounded 管的
+- 准则没写出具体答案，只说「与标准答案一致」→ 这是表述问题，不是事实错误
+
+【判定依据必须交代来源，填 basis】
+  draft            依据下方【人工草稿准则】—— 最可信
+  question         依据题干本身给出的条件/数据
+  model_knowledge  依据你自己的领域知识
+
+⚠️ **你自己也会记错**。凡是只能靠 model_knowledge 判定的，把握不足就判 clean。
+宁可漏判，不要把一条正确的准则打成事实错误 —— 误判的代价是删掉唯一正确的答案判据。
+只有当你能明确指出「正确的应该是什么」时，才判 defective。
+
+只输出 JSON：
+{"verdict": "clean|defective",
+ "basis": "draft|question|model_knowledge",
+ "reason": "若判 defective，一句话说错在哪，不超过50字",
+ "correct_value": "若判 defective 且你能确定正确内容，写出来；不确定填空串"}'''
+
 
 def build(r, c, mode):
     """构建诊断 prompt。"""
@@ -87,6 +133,7 @@ def build(r, c, mode):
         'Subjective': SYS_SUBJ,
         'Non-Atomic': SYS_ATOM,
         'Ungrounded': SYS_UNGR,
+        'Factual': SYS_FACT,
     }
 
     user = (f'【学科】{subj}\n'
@@ -96,6 +143,15 @@ def build(r, c, mode):
             f'维度: {dim}\n'
             f'准则: {crit_txt}\n'
             f'理由: {reason}')
+
+    # 只有事实检测器拿真值。另外三个判形式不判事实，prompt 保持原样，
+    # 它们已有的缓存才不会失效。
+    if mode == 'Factual':
+        draft = r.get('draft_rubric') or {}
+        gt = '\n'.join(f'- {x.get("criteria", "")}'
+                       for x in (draft.get('rubrics') or [])[:8])
+        user += (f'\n\n【人工草稿准则（本题的真值参照，人工写的，比你的记忆可靠）】\n'
+                 f'{gt or "（本题无草稿，只能靠题干或你自己的知识判断——请从严，把握不足就判 clean）"}')
 
     return [{'role': 'system', 'content': sys_map[mode]},
             {'role': 'user', 'content': user}]
@@ -110,7 +166,7 @@ def main():
     print(f'  准则总数: {nc_total}')
 
     # 摊平到 (题, 准则, 诊断模式)
-    MODES = ('Subjective', 'Non-Atomic', 'Ungrounded')
+    MODES = ('Subjective', 'Non-Atomic', 'Ungrounded', 'Factual')
     jobs = []
     for r in recs:
         for c in r.get('rubrics', []):
@@ -129,9 +185,13 @@ def main():
         verd = obj.get('verdict', 'clean')
         if verd not in ('clean', 'defective'):
             verd = 'clean'
-        return (r['rid'], cid, mode.lower(),
-                {'verdict': verd,
-                 'reason': str(obj.get('reason', ''))[:120] if verd == 'defective' else ''})
+        d = {'verdict': verd,
+             'reason': str(obj.get('reason', ''))[:120] if verd == 'defective' else ''}
+        if mode == 'Factual' and verd == 'defective':
+            b = str(obj.get('basis', '') or 'model_knowledge')
+            d['basis'] = b if b in ('draft', 'question', 'model_knowledge') else 'model_knowledge'
+            d['correct_value'] = str(obj.get('correct_value', ''))[:200]
+        return r['rid'], cid, mode.lower(), d
 
     done, _ = stage.run(one, jobs, workers=WORKERS, desc='s11L')
 
@@ -153,7 +213,7 @@ def main():
                 continue
 
             crit_diag = diag.get((r['rid'], cid), {})
-            failure_modes = [m for m in ('subjective', 'non-atomic', 'ungrounded')
+            failure_modes = [m for m in ('subjective', 'non-atomic', 'ungrounded', 'factual')
                            if crit_diag.get(m, {}).get('verdict') == 'defective']
 
             is_defect = len(failure_modes) > 0
@@ -178,6 +238,24 @@ def main():
     print(f'  失效模式分布:')
     for mode, n in mode_stats.most_common():
         print(f'    {mode:<12} {n:5d} ({n/max(nc_total,1)*100:4.1f}%)')
+
+    # 事实错误的判定依据分布：model_knowledge 那批不可全信（诊断器自己会记错），
+    # 处置端据此降级为「待复核」而非直接改写。
+    basis = Counter()
+    has_fix = 0
+    for r in res:
+        for d in r['diagnoses']:
+            f = d['details'].get('factual', {})
+            if f.get('verdict') == 'defective':
+                basis[f.get('basis', '?')] += 1
+                if f.get('correct_value'):
+                    has_fix += 1
+    if basis:
+        print(f'\n  事实错误的判定依据:')
+        for b, n in basis.most_common():
+            tag = ' ← 可直接改写' if b in ('draft', 'question') else ' ← 待人工复核'
+            print(f'    {b:<16} {n:5d}{tag}')
+        print(f'    其中给出了正确内容(correct_value)的: {has_fix}/{sum(basis.values())}')
 
     # 抽样展示
     bad_samples = [r for r in res if any(d['is_defective'] for d in r.get('diagnoses', []))]

@@ -10,7 +10,11 @@
   （q0008 满分 12→3，那条 +8 的「列出全部六十四卦」没了），
   8 道题满分腰斩。删除对 non-atomic 是错误处置 —— 非原子的正确解法是拆，不是删。
 
-处置策略（按失效模式分级）：
+处置策略（按失效模式分级，优先级 factual > drop > split）：
+  factual     → **绝不删**，落队列拿真值重写。事实错误的准则主题是对的、内容写错了，
+                删掉这道题就没有答案判据了。诊断器只凭自身知识判定的（basis=
+                model_knowledge）另打 needs_review，下游只做保守改写或转人工 ——
+                实测它会在同一题内自相矛盾（q0045 一条判由说产物三种、另一条说两种）。
   subjective  → 删。主观准则无法客观判定，留着只会增加判分方差。（实测仅 12 条）
   ungrounded  → 删。脱靶准则在评不相干的东西，删了不损失覆盖。（实测 318 条）
   non-atomic  → **不删**，落 _defect_queue.jsonl 等 s04Lb_split 拆分。
@@ -36,6 +40,7 @@ ACTION = {
     'subjective': 'drop',
     'ungrounded': 'drop',
     'non-atomic': 'split',
+    'factual': 'split',      # 走重写队列，绝不删 —— 见下方说明
 }
 
 
@@ -53,28 +58,49 @@ def gate_cid(r):
 
 
 def decide(r):
-    """返回 (要删的 cid 集合, 要拆的 cid→failure_modes 映射, 豁免的 cid 集合)。"""
+    """返回 (要删的 cid 集合, 要重写的 cid→任务信息, 豁免的 cid 集合)。
+
+    优先级：factual > drop > split。
+
+    factual 必须压过 drop —— 实测那 57 条「其实是事实错误」的准则当初就是被
+    塞进 ungrounded 才暴露出来的，新检测器上线后它们会同时背上两个标签。
+    若让 drop 优先，这批照样被删，加检测器就白加了。事实错误的准则**主题是对的、
+    内容写错了**，正确处置是拿真值重写，不是删。
+    """
     protect = {gate_cid(r)} - {None}
-    drop, split = set(), {}
+    drop, rewrite = set(), {}
 
     for d in r.get('diagnoses') or []:
         cid = d.get('_criterion_id')
         if not cid or not d.get('is_defective'):
             continue
         modes = d.get('failure_modes') or []
-        acts = {ACTION.get(m) for m in modes}
+        det = d.get('details') or {}
 
+        if 'factual' in modes:
+            f = det.get('factual') or {}
+            rewrite[cid] = {
+                'modes': modes, 'kind': 'factual',
+                'basis': f.get('basis', 'model_knowledge'),
+                'reason': f.get('reason', ''),
+                'correct_value': f.get('correct_value', ''),
+                # 诊断器凭自己记忆下的结论不可全信（实测它会在同一题里自相矛盾），
+                # 标出来让下游只做保守改写 / 转人工，不要直接写死一个新答案
+                'needs_review': f.get('basis') not in ('draft', 'question'),
+            }
+            continue
+
+        acts = {ACTION.get(m) for m in modes}
         if cid in protect:
-            # 闸门项即便被判 defective 也不删。若模式里有 non-atomic 仍可送去拆。
             if 'split' in acts:
-                split[cid] = modes
+                rewrite[cid] = {'modes': modes, 'kind': 'split'}
             continue
         if 'drop' in acts:
-            drop.add(cid)                 # drop 优先于 split：删了就不用拆
+            drop.add(cid)
         elif 'split' in acts:
-            split[cid] = modes
+            rewrite[cid] = {'modes': modes, 'kind': 'split'}
 
-    return drop, split, protect
+    return drop, rewrite, protect
 
 
 def main():
@@ -85,6 +111,7 @@ def main():
     res, queue = [], []
     n_drop = n_split = n_regen = n_protect = 0
     mode_stat = Counter()
+    kind_stat = Counter()
 
     for r in recs:
         rubrics = r.get('rubrics') or []
@@ -118,17 +145,28 @@ def main():
         n_split += len(split)
         n_protect += len(protect & (set(split) | drop))
 
-        # 待拆条目落盘，供 s04Lb_split 消费
+        # 待重写条目落盘，供 s04Lb_split 消费
         for c in kept:
             cid = c.get('_criterion_id')
             if cid in split:
+                t = split[cid]
+                kind_stat[t['kind']] += 1
                 queue.append({'rid': r['rid'], '_criterion_id': cid,
                               'criteria': c['criteria'], 'score': c['score'],
                               'dimension': c['dimension'],
                               'is_positive': c['is_positive'],
-                              'failure_modes': split[cid],
+                              'failure_modes': t['modes'],
+                              'kind': t['kind'],
+                              'basis': t.get('basis', ''),
+                              'diag_reason': t.get('reason', ''),
+                              'correct_value': t.get('correct_value', ''),
+                              'needs_review': t.get('needs_review', False),
                               'is_gate': cid in protect})
                 c['_pending_split'] = True
+                if t['kind'] == 'factual':
+                    c['_flag_factual'] = True
+                    if t.get('needs_review'):
+                        c['_needs_review'] = True
 
         res.append({**r,
                     'rubrics': kept,
@@ -153,7 +191,11 @@ def main():
     print(f'  诊断失效模式  : ' + '  '.join(f'{k}={v}' for k, v in mode_stat.most_common()))
     print(f'  准则数        : {n_before} → {n_after}')
     print(f'  删除(主观/脱靶): {n_drop} 条')
-    print(f'  送拆(非原子)   : {n_split} 条 → data/_defect_queue.jsonl')
+    print(f'  送重写         : {n_split} 条 → data/_defect_queue.jsonl  '
+          + '  '.join(f'{k}={v}' for k, v in kind_stat.most_common()))
+    n_rev = sum(1 for q in queue if q.get('needs_review'))
+    if n_rev:
+        print(f'    其中待人工复核: {n_rev} 条（事实错误但诊断器只凭自身知识判定）')
     print(f'  闸门项豁免     : {n_protect} 条（被判 defective 但保留）')
     print(f'  待重生成       : {n_regen} 题（删后正向不足 {MIN_POS} 条，已回滚）')
 
