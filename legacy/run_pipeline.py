@@ -15,6 +15,11 @@ from collections import Counter
 
 STATE_FILE = '.pipeline_state.json'
 
+# 2026-08-13 归档：本驱动只跑旧全量线，其 stage 已随之移到 legacy/full_path/。
+# lean 主线（s04L → s11L → s11Lb）由 scripts/rerun_lean_fixed.sh 驱动。
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STAGE_DIR = os.path.join(REPO, 'legacy', 'full_path')
+
 PHASES = {
     '1': {
         'desc': 'Phase 1: 20条试跑，验证checkpoint',
@@ -78,7 +83,7 @@ def count_records(path):
 
 def run_stage(mod, desc, seed, retry=0):
     """跑一个 stage，返回 (成功, 产出条数)。"""
-    print(f'\n▶ [{desc}] stages/{mod}.py')
+    print(f'\n▶ [{desc}] {mod}.py')
     t0 = time.time()
     env = dict(os.environ)
     if seed:
@@ -88,8 +93,12 @@ def run_stage(mod, desc, seed, retry=0):
         env.pop('RP_SEED', None)
 
     logf = f'/tmp/rp_{mod}_r{retry}.log'
-    ret = subprocess.call(f'python3 stages/{mod}.py > {logf} 2>&1',
-                          shell=True, env=env, cwd='/home/tantianye/rubrics')
+    # 前段 stage（s00b/s01/s02/s02_5/s03）仍在 stages/，后段已归档到 legacy/full_path/
+    script = next(p for p in (os.path.join(STAGE_DIR, f'{mod}.py'),
+                              os.path.join(REPO, 'stages', f'{mod}.py'))
+                  if os.path.exists(p))
+    ret = subprocess.call(f'python3 {script} > {logf} 2>&1',
+                          shell=True, env=env, cwd=REPO)
     dt = time.time() - t0
 
     # 读产出文件判断成功与否
