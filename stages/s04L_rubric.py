@@ -366,6 +366,15 @@ def parse(r, raw):
                         if c['score'] > 1:
                             c['score'] = 1
 
+                    # 压到 1 分后仍可能稀释：答案项封顶 8 分，支撑项一多
+                    # （terra 实测 7.2 条/题）就有 8/(8+7)=53% < 60%。
+                    # gated 本质是 k=1，支撑项砍到 4 条以内把占比拉回区间
+                    # （8/(8+4)=67%）。pos_l 已按分值降序，从尾部裁。
+                    max_support = int(target_answer * (1 - target_ratio)
+                                      / target_ratio)          # 70% 目标 → 3.4 → 3
+                    max_support = max(3, min(4, max_support))
+                    other_items = other_items[:max_support]
+
                 # 重新构建final（保持顺序）
                 final = [answer_item] + other_items + neg_l
 
