@@ -99,12 +99,11 @@ outputs/rubrics_advisor_lean.jsonl
   │   ├─ full_mark: 满分
   │   └─ rubrics[]: 
   │       ├─ criteria: 准则文本
-  │       ├─ score: 带符号分值，正负号即加分/扣分（方向只看这里）
+  │       ├─ score: 分值
   │       ├─ reason: 原因
   │       ├─ dimension: 维度
-  │       └─ is_positive: 0/1 阀门标记（导师 2026-08-14 口径）——
-  │            true = gated_answer 题的答案判据，没拿到整题不得分；
-  │            ⚠️ 与内部 data/*.jsonl 的 is_positive（=方向）语义不同
+  │       ├─ is_positive: 正向/负向（方向）
+  │       └─ is_gate: 0/1 阀门标记，gated_answer 题的答案判据
   └─ 用途: 给导师展示，填入 Excel
 ```
 

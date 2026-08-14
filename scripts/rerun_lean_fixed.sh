@@ -82,7 +82,7 @@ echo "  data/s11L_diagnosed.jsonl     RIFT 诊断结果"
 echo "  data/s11Lb_remedied.jsonl     处置后"
 echo "  data/s04Lb_split.jsonl        缺陷重写后（交付源）"
 echo "  data/_defect_queue.jsonl      待拆队列（非原子）"
-echo "  outputs/rubrics_advisor_lean.jsonl  交付档（5 字段 + rubric_form/blocks；is_positive=阀门，方向看 score 符号）"
+echo "  outputs/rubrics_advisor_lean.jsonl  交付档（5 字段 + rubric_form/is_gate/blocks）"
 echo "  outputs/rubrics_internal.jsonl      内部档（含血缘/诊断/质量标记）"
 echo
 echo "回滚: cp outputs/rubrics_advisor_lean.jsonl.bak outputs/rubrics_advisor_lean.jsonl"
