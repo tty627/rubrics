@@ -151,11 +151,14 @@ rubric 是用来区分好坏的，不是用来为难所有人的。
 - 有唯一正确答案的题（gated_answer）：答案正确性那条给 6-8 分，
   其余支撑项各 1 分。这类题本质是「答对没答对」，均分会稀释主准则。
 - 开放题：核心结论 3 分，重要支撑 2 分，一般要点 1 分。
-- 扣分项一律 -2 或 -3 分。
+- 扣分项 -1 至 -5 分，分值大小 = 严重性：-1 轻微、-2/-3 较严重、
+  -4/-5 原则性错误（触犯即整题不合格）。每条扣分项在 JSON 里带
+  severity 字段（minor/major/principle），与分值大小一致。
 
 只输出 JSON：
-{{"rubrics": [{{"criteria": "不超过70字", "score": 2, "reason": "为什么这条是基本要求，不超过30字", "dimension": "从上表选", "is_positive": true, "perspective_ids": ["q0001-p1"]}}]}}
-perspective_ids 填这条准则覆盖了哪些视角的 id（可空、可多个），用于追溯血缘。'''
+{{"rubrics": [{{"criteria": "不超过70字", "score": 2, "reason": "为什么这条是基本要求，不超过30字", "dimension": "从上表选", "is_positive": true, "perspective_ids": ["q0001-p1"], "severity": "major"}}]}}
+perspective_ids 填这条准则覆盖了哪些视角的 id（可空、可多个），用于追溯血缘。
+severity 只对扣分项（is_positive=false）填 minor/major/principle。'''
 
 
 def build(r):
@@ -314,10 +317,13 @@ def parse(r, raw):
         if pos:
             sc = min(sc, 8 if is_gate else 3)      # gated 的答案项要撑到 60-80%
         else:
-            sc = -min(max(sc, 2), 3)
+            # 2026-08-14 松开：不再强制 -2/-3。负项严重性由分值大小（-1..-5）
+            # 与 severity 字段共同表达，s04Lc 会统一复核打标
+            # （本轮存量负项靠 s04Lc 补标，不重跑本步）。
+            sc = -min(max(sc, 1), 5)
 
         pids = [p for p in (c.get('perspective_ids') or []) if p in valid_pids]
-        out.append({
+        item = {
             'criteria': txt[:200],
             'score': sc,
             'reason': str(c.get('reason', ''))[:100],
@@ -327,7 +333,12 @@ def parse(r, raw):
             '_dim_from_table': hit,
             '_perspective_ids': pids,
             '_scenario_ids': sorted({pid2sid[p] for p in pids if pid2sid.get(p)}),
-        })
+        }
+        # 扣分项透传模型的 severity（未来新生成的负项直接带分级）
+        if (not pos and isinstance(c.get('severity'), str)
+                and c['severity'] in rubric.SEVERITY_LEVELS):
+            item['severity'] = c['severity']
+        out.append(item)
 
     # 超预算时按 |score| 降序保留，负向至多留 2 条
     pos_l = sorted(rubric.positives(out), key=lambda x: -x['score'])
