@@ -214,6 +214,28 @@ lean 主线已跑通 452 条全量（2026-08-13）：
    （`_flag_vague` / `_no_groundtruth` / `_cliff` / `_mention_only` / `_subjective_threshold`），
    只打标不删，交给 s04Lb 重写，避免全量重跑。
 
+**2026-08-14 Phase 4 试点审计 + 测量工具修复**（详见 `docs/reports/AUDIT_48PILOT_PHASE4.md`）：
+
+48 题试点（s10L_pool48 → s12L_judged48 → s11Lc_cons48）逐题审计发现
+24 个 Hackable 信号里 15 个是 pool 造法失效、6 个是判分错误、只有 3 个真缺陷。
+修复：
+1. `lib/answer_check.py`（新）：程序化答案核验共享模块。修 option 正则 `A.`
+   永不命中的 bug（q0179 闸门清零根因）；短数字（≤2 位）改「结论标记上下文
+   + 行尾标点」匹配，防 `2` 命中公式常数 `2π`；提供 `has_correct_answer()`
+   给 s10L 做对抗/弱档反向校验。
+2. `s10L_pool.py`：strong 退化用最强模型重生成（跳过 10→1）；adv/weak 生成后
+   反向校验「结论 ≠ answer_canonical」，答对自动重试、仍答对标 `answer_correct`
+   （诊断侧剔除）；cut 删量 <8% 自动重试；两趟执行保证 cut 基于最终 strong。
+3. `s12L_judge.py`：同源一致性护栏——trunc/cut 是 strong 字面子集，子集档 met
+   而 strong 未 met 在逻辑上不可能，以 strong 为准修正（记 `judge_fixed`）。
+4. `s11Lc_consequential.py`：gated 题 weak_mean 只用 weak+adv；trunc/cut 与
+   strong 正向 met 集相同 → 构造失效剔除；gap 改 strong−weak 单档差；
+   trunc/cut 平分降级为 `suspect_ties`（不计 defective）；floor 题抑制
+   LowSignal/surface（处置方向相反）。
+复测：Hackable 24→10、LowSignal 18→11、跳过 10→1。残留 = 3 真缺陷（q0167/
+q0336/q0388）+ 7 弱档造法失败（canon 缺失无法程序化拦截，待 s11Ld 处置时
+LLM 复核）+ 4 地板（q0149/q0377/q0408/q0440，处置方向=放松准则）。
+
 **交付审查发现**（`outputs/rubrics_advisor_lean.jsonl` 全量统计，2026-08-13）：
 - 35 条准则引用「标准答案」但交付档里没有标准答案 → 判分器无法独立执行
 - 115 题存在单条正向准则 ≥50% 满分，其中 72 条是「全部/且/每」全量复合 → 0/1 悬崖

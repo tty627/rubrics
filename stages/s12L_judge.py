@@ -58,62 +58,12 @@ idx 对应下方准则的编号，必须每条都给。'''
 #   q0048  answer 存的是整句话「将 host 配置为 0.0.0.0，例如 uvicorn ...」，
 #          强档回复写了 --host 0.0.0.0 但措辞不同 → 答对却判错，闸门项直接清零
 # 现在改为按 s05L 给出的 answer_kind 分策略，且只认 answer_canonical（最小可判定串）。
-_TRIM = re.compile(r'[\s　*`"\'“”‘’]+')
-_ZH_PUNCT = str.maketrans('，；：（）［］｛｝＜＞', ',;:()[]{}<>')
-
-
-def norm_txt(t):
-    """轻量归一：只统一空白、装饰符号和中英标点，**不删内容字符**。
-
-    旧版把逗号也删了，于是 `0,1,1,1` 和 `0111` 等价 —— 这类改动会让比对
-    失去意义。这里只做安全的规范化。
-    """
-    return _TRIM.sub('', str(t or '').translate(_ZH_PUNCT)).lower()
-
-
-def check_program(kind, canon, text):
-    """按答案类型做比对。返回 (是否可判定, 是否命中)。
-
-    numeric/option —— 词边界匹配，避免 "3" 命中 "13"、"B" 命中 "Boc"
-    token          —— 短标识（IP、参数名、术语），只要在正文里出现过就算。
-                      它总是嵌在句子中间，不能用整行相等 —— 实测 q0048 的
-                      `0.0.0.0` 被误分成 exact_text，强档明明写了
-                      `--host 0.0.0.0` 却判未命中，闸门项 7 分被清零。
-    exact_text     —— **整行相等**，不是包含。多一个字符就算错，
-                      这正是 q0303 那种「末尾多加 ,1」要抓的情形
-    其余           —— 不可判定，交给 LLM
-    """
-    canon = (canon or '').strip()
-    if kind not in ('numeric', 'option', 'token', 'exact_text') or not canon:
-        return False, False
-
-    if kind == 'token':
-        # 太短的串（如 "1"、"是"）会随机命中，退回 LLM
-        if len(canon) < 3:
-            return False, False
-        return True, norm_txt(canon) in norm_txt(text)
-
-    if kind == 'exact_text':
-        want = norm_txt(canon)
-        if len(want) < 4:
-            return False, False
-        # 逐行比：回复里任意一行（或连续多行拼接）与答案完全相等才算命中
-        lines = [norm_txt(x) for x in re.split(r'[\r\n]+', text) if x.strip()]
-        if want in lines:
-            return True, True
-        # 答案本身多行时，按同样行数的滑窗拼接后比对
-        want_lines = [norm_txt(x) for x in re.split(r'[\r\n]+', canon) if x.strip()]
-        if len(want_lines) > 1:
-            k = len(want_lines)
-            for i in range(len(lines) - k + 1):
-                if lines[i:i + k] == want_lines:
-                    return True, True
-        return True, False
-
-    # numeric / option：词边界匹配
-    esc = re.escape(canon.strip())
-    pat = re.compile(rf'(?<![0-9A-Za-z.]){esc}(?![0-9A-Za-z.])', re.I)
-    return True, bool(pat.search(text))
+# 2026-08-14 修复（48 试点审计）：
+#   - option 正则负向断言禁止字母后跟句点 → `A.` 永不命中（q0179 闸门清零）
+#   - 短数字（≤2 位）全文本匹配被公式常数命中（q0166 canon='2' 命中 '2π'）
+#   核验逻辑已抽到 lib/answer_check.py，与 s10L 的反向校验共用。
+from lib import answer_check
+check_program = answer_check.check_program
 
 
 def build(r, resp, rubrics):
@@ -234,6 +184,35 @@ def main():
     for rid, tier, items, score, missing in done:
         agg[rid][tier] = {'items': items, 'score': score, 'missing': missing}
 
+    # ---- 同源一致性护栏（48 试点审计 q0174/q0242/q0287/q0314/q0440）----
+    # trunc/cut 是 strong 的字面子集：同一内容在子集档 met、超集档未 met
+    # 在逻辑上不可能，只可能是判分器跨档双标（同句一✓一✗）。以 strong 为准
+    # 修正子集档，记 judge_fixed，不额外调 LLM。
+    n_fixed = 0
+    for rid, tiers in agg.items():
+        if 'strong' not in tiers:
+            continue
+        strong_items = {x['_criterion_id']: x for x in tiers['strong']['items']}
+        for t in ('trunc', 'cut'):
+            j = tiers.get(t)
+            if not j:
+                continue
+            changed = False
+            for x in j['items']:
+                s = strong_items.get(x['_criterion_id'])
+                if not s or s.get('judge_missing') or x.get('judge_missing'):
+                    continue
+                if x['met'] and not s['met']:
+                    x['met'] = False
+                    x['judge_fixed'] = True
+                    x['reason'] = ('判分一致性修正：该档是强档的字面子集，'
+                                   '同内容强档未满足，以强档为准')
+                    x['evidence'] = ''
+                    changed = True
+            if changed:
+                j['score'] = sum(x['score'] for x in j['items'] if x['met'])
+                n_fixed += 1
+
     res = []
     for r in recs:
         pos = [c for c in r.get('rubrics') or [] if c['is_positive']]
@@ -267,6 +246,9 @@ def main():
                  if x['reason'].startswith('判 true 但未给证据'))
     if n_noev:
         print(f'  ⚠️  判 true 但无证据: {n_noev} 条，已按未满足处理')
+    if n_fixed:
+        print(f'  ⚙️  同源一致性修正: {n_fixed} 档（trunc/cut 与 strong 同内容'
+              f'判分冲突，已以 strong 为准，见 items[].judge_fixed）')
     inc = [(r['rid'], t, v['n_missing']) for r in res
            for t, v in r['judged'].items() if v.get('judge_incomplete')]
     if inc:
