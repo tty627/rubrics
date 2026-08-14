@@ -31,12 +31,25 @@
     cut       强回复删关键论点
     weak      最弱模型生成
     adv       对抗档：verifiable 造「答案错过程全」，open 造「面面俱到但都很浅」
+
+2026-08-14 修复（48 试点审计，docs/reports/AUDIT_48PILOT_PHASE4.md）：
+  A. strong 退化（10/48）不再一票跳过：用最强模型重生成 strong 当上界
+     （仍不用锚，守住约束 1）；重生成后仍退化才标记跳过。
+  B. 对抗档反向核验：gated/verifiable 且答案可判定时，程序化校验
+     「最终结论 ≠ answer_canonical」，答对了自动用强化提示词重造一次；
+     仍答对 → 标 answer_correct，诊断侧剔除该档（实测 8 道 gated 里 5 道
+     的对抗档「答案错」没造出来，adv 高分不是钻空子是造错失败）。
+  C. gated 弱档反向核验：弱档把答案答对就失去「弱」的意义（q0238 代码、
+     q0301 数学），同样重造一次，仍答对标 answer_correct。
+  D. cut 删除量 <8% 自动重试一次（强化删除量指令）；仍不达标标 degraded。
+  E. 两趟执行：mid/weak/adv/strong_regen 先跑，定稿 strong 后再造 cut——
+     cut 必须基于最终 strong，退化题重生成后截断/删点才不会错位。
 """
 import json, os, re, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage
+from lib import stage, answer_check
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
 SRC = os.environ.get('RP_S10L_SRC', 's04L_pilot.jsonl')
@@ -46,6 +59,10 @@ TRUNC_RATIO = float(os.environ.get('RP_TRUNC', 0.4))
 MIN_CUT = float(os.environ.get('RP_MIN_CUT', 0.08))
 # strong 档短于此视为退化，不能当上界参照（实测 q0007 的 strong 只有 48 字）
 MIN_STRONG = int(os.environ.get('RP_MIN_STRONG', 200))
+
+SYS_STRONG = '''你在回答一道题。请给出一个**高质量**的回答：
+内容正确、覆盖完整、论证充分、篇幅充实（几百字以上，能展开的都展开）。
+直接作答，不要说明你在做什么。'''
 
 SYS_MID = '''你在回答一道题。请给出一个**中等质量**的回答：
 主要结论基本正确，覆盖题目的主干，但不做深入展开、不补充边界条件和例外情形。
@@ -74,6 +91,13 @@ SYS_CUT = '''你要从一份回答里**整段删掉一个最关键的论点**，
 
 只输出删改后的回答正文，不要任何说明，不要标注你删了什么。'''
 
+SYS_CUT_RETRY = '''上一版你删得太少（不足 8%），「删关键论点」造法失效。重写：
+
+这次必须**整段删掉**承载最终结论/答案/核心数值的那一整段（连同它的论证与推导），
+被删内容必须 ≥ 15%，其余部分逐字保留、不要改写。宁可删一整段，也不要只删几个词。
+
+只输出删改后的回答正文，不要任何说明。'''
+
 SYS_ADV_VER = '''你要造一份**对抗性回答**，用来测试评分标准有没有漏洞。
 
 要求：过程写得详尽、专业、条理清晰，像一份高质量解答 ——
@@ -84,6 +108,14 @@ SYS_ADV_VER = '''你要造一份**对抗性回答**，用来测试评分标准�
 
 只输出回答正文。'''
 
+SYS_ADV_VER_RETRY = '''上一版你造的对抗性回答最终答案居然是对的，造法失败。重写：
+
+过程要详尽、专业、条理清晰，但**最终结论必须与正确答案不同**——
+数值要算错、选项要选错的、结论要反着说。错误藏在推导靠后的步骤里，
+开头看起来要专业。不要标注哪里错了。
+
+只输出回答正文。'''
+
 SYS_ADV_OPEN = '''你要造一份**对抗性回答**，用来测试评分标准有没有漏洞。
 
 要求：把题目相关的各个方面**都提到一句**，术语用对、覆盖面看起来很全 ——
@@ -91,6 +123,14 @@ SYS_ADV_OPEN = '''你要造一份**对抗性回答**，用来测试评分标准�
 
 目标是：让「是否提及某方面」这类准则全部通过，但实际信息量很低。
 不要标注这是对抗样本。
+
+只输出回答正文。'''
+
+SYS_WEAK_GATED_RETRY = '''上一版你把答案写对了，没造出「弱档」。重写：
+
+给一份**质量偏低**的回答：方向大致对、表面像认真作答，但**关键处出错**——
+计算错、漏掉关键条件、结论不完整或偏差，最终答案不能正确。
+篇幅简短。不要标注这是弱档。
 
 只输出回答正文。'''
 
@@ -146,38 +186,62 @@ def truncate(t, ratio=TRUNC_RATIO):
 
 
 def main():
+    m_strong = stage.pick('RP_M_POOL_STRONG', 'generator')
     m_mid = stage.pick('RP_M_POOL_MID', 'pool_mid')
     m_weak = stage.pick('RP_M_POOL_WEAK', 'pool_weak')
     recs = stage.read_jsonl(SRC)
     print(f'步骤 10L 回复池: {len(recs)} 题, 源={SRC}')
-    print(f'  中档={m_mid.name}  弱档={m_weak.name}')
+    print(f'  强档重生成={m_strong.name}  中档={m_mid.name}  弱档={m_weak.name}')
     n_shared = sum(1 for r in recs if strong_of(r)[2])
     if n_shared:
         print(f'  ⚠️  单回复题 {n_shared} 个：强档与锚共用，违反硬约束第 1 条，已标 pool_shared')
 
-    # 摊平成 (rid, 档位) 任务；strong/trunc 不调 LLM
-    jobs = []
-    for r in recs:
-        for tier in ('mid', 'weak', 'cut', 'adv'):
-            jobs.append((r['rid'], tier))
-    print(f'  LLM 任务: {len(jobs)} ({len(recs)} 题 × 4 档，strong/trunc 本地生成)')
-
     by_rid = {r['rid']: r for r in recs}
+
+    # ---- 退化预判 + 第一趟任务（mid/weak/adv + strong 重生成）----
+    degen = {}
+    for r in recs:
+        key, strong, shared = strong_of(r)
+        d, why = strong_degenerate(r, strong)
+        degen[r['rid']] = (key, strong, d, why, shared)
+
+    jobs1 = []
+    for r in recs:
+        for tier in ('mid', 'weak', 'adv'):
+            jobs1.append((r['rid'], tier))
+        if degen[r['rid']][2] and not degen[r['rid']][4]:
+            jobs1.append((r['rid'], 'strong_regen'))
+    print(f'  第一趟 LLM 任务: {len(jobs1)} （mid/weak/adv + 退化题 strong 重生成'
+          f' {sum(1 for j in jobs1 if j[1] == "strong_regen")}）')
+
+    # rid -> 最终 strong（cut/trunc 都以它为准）
+    strong_map = {}
 
     def one(job):
         rid, tier = job
         r = by_rid[rid]
         q = (r.get('query_eff') or r['question'])[:2000]
-        _, strong, _ = strong_of(r)
         ver = r.get('question_type') == 'verifiable'
+        canon_ok = (ver and r.get('rubric_form') == 'gated_answer'
+                    and (r.get('answer_canonical') or '').strip()
+                    and r.get('answer_sound', True))
+        kind, canon = r.get('answer_kind'), r.get('answer_canonical')
+        meta = {}
 
+        if tier == 'strong_regen':
+            txt, _ = stage.llm.call(m_strong,
+                                    [{'role': 'system', 'content': SYS_STRONG},
+                                     {'role': 'user', 'content': q}],
+                                    stage='s10L_strong')
+            return rid, tier, (txt or '').strip(), meta
         if tier == 'mid':
             sys_p, mdl, usr = SYS_MID, m_mid, q
         elif tier == 'weak':
             sys_p, mdl, usr = SYS_WEAK, m_weak, q
         elif tier == 'cut':
+            _, strong, _, _, _ = strong_map[rid]
             if not strong.strip():
-                return rid, tier, ''
+                return rid, tier, '', meta
             sys_p, mdl = SYS_CUT, m_mid
             usr = f'【题目】\n{q}\n\n【待改写的回答】\n{strong[:6000]}'
         else:
@@ -187,48 +251,120 @@ def main():
         txt, _ = stage.llm.call(mdl, [{'role': 'system', 'content': sys_p},
                                       {'role': 'user', 'content': usr}],
                                 stage=f's10L_{tier}')
-        return rid, tier, (txt or '').strip()
+        txt = (txt or '').strip()
 
-    done, errs = stage.run(one, jobs, workers=WORKERS, desc='s10L')
-    gen = {(rid, tier): txt for rid, tier, txt in done}
+        # ---- 反向核验 + 重试（审计修复 B/C/D）----
+        if tier == 'adv' and canon_ok and \
+                answer_check.has_correct_answer(kind, canon, txt):
+            meta['retried'] = True
+            txt2, _ = stage.llm.call(mdl,
+                                     [{'role': 'system', 'content': SYS_ADV_VER_RETRY},
+                                      {'role': 'user', 'content': q}],
+                                     stage='s10L_adv_retry')
+            txt2 = (txt2 or '').strip()
+            if txt2 and not answer_check.has_correct_answer(kind, canon, txt2):
+                txt, meta['fixed'] = txt2, True
+            else:
+                meta['answer_correct'] = True
+        if tier == 'weak' and canon_ok and \
+                answer_check.has_correct_answer(kind, canon, txt):
+            meta['retried'] = True
+            txt2, _ = stage.llm.call(m_weak,
+                                     [{'role': 'system', 'content': SYS_WEAK_GATED_RETRY},
+                                      {'role': 'user', 'content': q}],
+                                     stage='s10L_weak_retry')
+            txt2 = (txt2 or '').strip()
+            if txt2 and not answer_check.has_correct_answer(kind, canon, txt2):
+                txt, meta['fixed'] = txt2, True
+            else:
+                meta['answer_correct'] = True
+        if tier == 'cut' and txt:
+            strong = strong_map[rid][1]
+            ratio = 1 - len(txt) / max(len(strong), 1)
+            if ratio < MIN_CUT:
+                meta['retried'] = True
+                txt2, _ = stage.llm.call(m_mid,
+                                         [{'role': 'system', 'content': SYS_CUT_RETRY},
+                                          {'role': 'user', 'content': usr}],
+                                         stage='s10L_cut_retry')
+                txt2 = (txt2 or '').strip()
+                if txt2 and 1 - len(txt2) / max(len(strong), 1) >= MIN_CUT:
+                    txt, meta['fixed'] = txt2, True
+        return rid, tier, txt, meta
 
+    done1, errs1 = stage.run(one, jobs1, workers=WORKERS, desc='s10L 趟1')
+    gen = {(rid, tier): (txt, meta) for rid, tier, txt, meta in done1}
+
+    # ---- 定稿 strong ----
+    n_regen = 0
+    for r in recs:
+        key, strong, d, why, shared = degen[r['rid']]
+        if d and not shared:
+            reg, _ = gen.get((r['rid'], 'strong_regen'), ('', {}))
+            reg = (reg or '').strip()
+            if reg and len(reg) >= MIN_STRONG \
+                    and not strong_degenerate(r, reg)[0]:
+                key, strong, d, why = f'重生成({m_strong.name})', reg, False, ''
+                n_regen += 1
+            else:
+                key = f'现成回复 {key}（重生成后仍退化）'
+        strong_map[r['rid']] = (key, strong, d, why, shared)
+
+    # ---- 第二趟：cut 基于最终 strong ----
+    jobs2 = [(r['rid'], 'cut') for r in recs if strong_map[r['rid']][1].strip()]
+    done2, errs2 = stage.run(one, jobs2, workers=WORKERS, desc='s10L 趟2(cut)')
+    gen.update({(rid, tier): (txt, meta) for rid, tier, txt, meta in done2})
+
+    # ---- 汇总 ----
     res, stat = [], Counter()
     for r in recs:
-        key, strong, shared = strong_of(r)
+        key, strong, deg, why, shared = strong_map[r['rid']]
         ver = r.get('question_type') == 'verifiable'
         pool = []
 
-        def add(tier, text, how):
+        def add(tier, text, how, meta=None):
             text = (text or '').strip()
             if not text:
                 return
-            pool.append({'tier': tier, 'text': text, 'how': how,
-                         'n_chars': len(text)})
+            p = {'tier': tier, 'text': text, 'how': how, 'n_chars': len(text)}
+            meta = meta or {}
+            if meta.get('answer_correct'):
+                p['answer_correct'] = True
+            if meta.get('retried') and meta.get('fixed'):
+                p['how'] += '（已触发重造）'
+            pool.append(p)
             stat[tier] += 1
 
         add('strong', strong, f'现成回复 {key}')
-        add('mid', gen.get((r['rid'], 'mid'), ''), f'{m_mid.name} 生成')
+        add('mid', gen.get((r['rid'], 'mid'), ('', {}))[0],
+            f'{m_mid.name} 生成')
         add('trunc', truncate(strong), f'强回复截断至 {TRUNC_RATIO:.0%}')
 
-        # cut 档要校验删除量：实测模型常只删十几个字（1%-3%），这一档就失效了，
-        # 而失效的 cut 会被 Hackable 诊断读成「删了关键论点仍给分」，得出反向结论。
-        # 删得太少就标 degraded，诊断侧据此排除，不让它污染结论。
-        cut_txt = (gen.get((r['rid'], 'cut')) or '').strip()
+        cut_txt, cut_meta = gen.get((r['rid'], 'cut'), ('', {}))
+        cut_txt = (cut_txt or '').strip()
         if cut_txt and strong:
             ratio = 1 - len(cut_txt) / max(len(strong), 1)
             if ratio < MIN_CUT:
-                add('cut', cut_txt, f'删关键论点（⚠️仅删 {ratio:.1%}，未达 '
-                                    f'{MIN_CUT:.0%}，本档失效）')
+                add('cut', cut_txt,
+                    f'删关键论点（⚠️仅删 {ratio:.1%}，未达 {MIN_CUT:.0%}，'
+                    f'重试后仍失效）', cut_meta)
                 pool[-1]['degraded'] = True
-                pool[-1]['cut_ratio'] = round(ratio, 4)
             else:
-                add('cut', cut_txt, f'强回复删关键论点（删 {ratio:.1%}）')
-                pool[-1]['cut_ratio'] = round(ratio, 4)
-        add('weak', gen.get((r['rid'], 'weak'), ''), f'{m_weak.name} 生成')
-        add('adv', gen.get((r['rid'], 'adv'), ''),
-            '对抗：答案错但过程完整' if ver else '对抗：面面俱到但都很浅')
+                add('cut', cut_txt, f'强回复删关键论点（删 {ratio:.1%}）', cut_meta)
+            pool[-1]['cut_ratio'] = round(ratio, 4)
 
-        deg, why = strong_degenerate(r, strong)
+        wt, wm = gen.get((r['rid'], 'weak'), ('', {}))
+        w_how = f'{m_weak.name} 生成'
+        if wm.get('answer_correct'):
+            w_how += '（⚠️答案核验：把答案答对了，本档失效）'
+        add('weak', wt, w_how, wm)
+
+        at, am = gen.get((r['rid'], 'adv'), ('', {}))
+        a_how = '对抗：答案错但过程完整' if ver else '对抗：面面俱到但都很浅'
+        if am.get('answer_correct'):
+            a_how += '（⚠️答案核验：结论是正确答案，本档失效）'
+        add('adv', at, a_how, am)
+
         res.append({**r, 'pool': pool, 'pool_shared': shared,
                     'pool_strong_key': key,
                     'strong_degenerate': deg, 'strong_degenerate_reason': why})
@@ -237,32 +373,37 @@ def main():
 
     npool = [len(r['pool']) for r in res]
     print(f'\n=== 步骤 10L 结果 ===')
-    if errs:
-        print(f'  失败        : {len(errs)} 条')
+    if errs1 or errs2:
+        print(f'  失败        : {len(errs1) + len(errs2)} 条')
     print(f'  回复/题     : min={min(npool)} max={max(npool)} '
           f'mean={sum(npool) / len(npool):.1f}  总计 {sum(npool)} 条')
     print(f'  各档条数    : ' + '  '.join(f'{k}={v}' for k, v in stat.most_common()))
+    print(f'  strong 重生成成功: {n_regen} 题')
 
-    # cut 档有效性：失效的档位会让 Hackable 诊断得出反向结论，必须显式报出来
     deg = [(r['rid'], p.get('cut_ratio')) for r in res for p in r['pool']
            if p['tier'] == 'cut' and p.get('degraded')]
     cut_all = [p.get('cut_ratio') for r in res for p in r['pool']
                if p['tier'] == 'cut' and p.get('cut_ratio') is not None]
     if cut_all:
-        print(f'\n  cut 档删除比例: mean={sum(cut_all) / len(cut_all):.1%}  '
+        print(f'  cut 档删除比例: mean={sum(cut_all) / len(cut_all):.1%}  '
               f'达标(≥{MIN_CUT:.0%}) {len(cut_all) - len(deg)}/{len(cut_all)}')
     if deg:
-        print(f'  ⚠️  cut 档失效 {len(deg)} 题（删得太少，已标 degraded，'
-              f'诊断侧会排除）: ' + ', '.join(f'{r}({x:.1%})' for r, x in deg[:8]))
+        print(f'  ⚠️  cut 档失效 {len(deg)} 题（重试后仍删太少，已标 degraded）: '
+              + ', '.join(f'{r}({x:.1%})' for r, x in deg[:8]))
+
+    ac = [(r['rid'], p['tier']) for r in res for p in r['pool']
+          if p.get('answer_correct')]
+    if ac:
+        print(f'  ⚠️  答案核验失败 {len(ac)} 档（重试后仍把答案答对，诊断侧将剔除）: '
+              + ', '.join(f'{a}/{b}' for a, b in ac))
 
     sd = [(r['rid'], r['strong_degenerate_reason']) for r in res
           if r.get('strong_degenerate')]
     if sd:
-        print(f'\n  ⚠️  strong 档退化 {len(sd)} 题（不能当上界参照，诊断侧跳过）:')
+        print(f'\n  ⚠️  strong 档仍退化 {len(sd)} 题（不能当上界参照，诊断侧跳过）:')
         for rid, why in sd:
             print(f'    {rid}: {why}')
 
-    # 长度梯度：弱档该明显短于强档，否则「弱」没造出来
     print(f'\n  平均长度（字）:')
     for tier in ('strong', 'mid', 'trunc', 'cut', 'weak', 'adv'):
         L = [p['n_chars'] for r in res for p in r['pool'] if p['tier'] == tier]

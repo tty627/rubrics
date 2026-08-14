@@ -16,16 +16,25 @@ RIFT 八失效模式里唯一需要回复池的两个，所以单独一步，跑
 低质量回复靠虚增表面特征就能拿高分。判据：
   1. **对抗档得分率 >= 强档** —— 最强信号。verifiable 的对抗档答案是错的，
      open 的对抗档每点只有一句话，它们不该赢过强回复。
-  2. 任一弱档（trunc/cut/weak）得分率 >= 强档
-  3. 准则级：某条准则在对抗/弱档上判 met，但在强档上判未 met —— 这条准则
+  2. weak 档得分率 >= 强档
+  3. 准则级：某条正向准则在弱/对抗档上判 met，但在强档上判未 met —— 这条准则
      测的是表面特征，不是内容
 
-## 三种弱档造法的一致性检查（设计文档 §10 的关键设计）
-若同一条准则在 trunc / cut / weak 三种造法下结论不一致，说明它测的是**长度或
-结构**而非内容，本身就是 Hackable 的信号。这是只用一种造法测不出来的。
-
-输入: s12L_judged.jsonl
-输出: s11Lc_consequential.jsonl
+2026-08-14 修复（48 试点审计，docs/reports/AUDIT_48PILOT_PHASE4.md）：
+  A. gated 题弱档口径：weak_mean 只认 weak+adv，剔除 trunc/cut（对齐 s10L
+     自己写明的「截断和删论点对数学题没意义」——截断前 40% 仍含答案，
+     天然高分，制造 LowSignal 假阳性）。
+  B. 构造失效剔除（用判分数据做后验）：
+     - s10L 标的 degraded（cut 删量不足）、answer_correct（adv/weak 把答案
+       答对了）的档位直接剔除；
+     - trunc/cut 与 strong 的正向 met 集完全相同时 → 删/截没有删掉任何
+       得分点，该档造法失效，剔除（审计：15/24 的假 Hackable 来自此类）。
+  C. gap 主判据改为 strong − weak 单档差：trunc/cut 是 strong 的子集，
+     得分天然偏高，等权平均系统性稀释 gap（q0113 实际强弱差 37pp，
+     被 trunc 拉成 21pp）。
+  D. trunc/cut 平分降级为「待复核」（suspect_ties），不再直接判 defective：
+     这类平分多为构造失效伪影，之前 24 个 Hackable 里 15 个是它。
+     adv/weak 平分与准则级翻转仍是 defective 级信号。
 """
 import json, os, statistics, sys
 from collections import Counter, defaultdict
@@ -54,23 +63,48 @@ def diagnose(r):
         return {'low_signal': None, 'hackable': None,
                 'skip_reason': f'strong 档退化：{r.get("strong_degenerate_reason", "")}'}
 
-    # 排除造法失效的档位。实测 cut 档常只删掉 1%-3% 的字（模型倾向最小改动），
-    # 这种「弱档」其实和强档几乎一样，会被读成「删了关键论点仍给分」，
-    # 得出完全反向的 Hackable 结论。s10L 已标 degraded，这里据此剔除。
-    degraded = {p['tier'] for p in (r.get('pool') or []) if p.get('degraded')}
-    for t in degraded:
+    # ---- 构造失效剔除（修复 B）----
+    excluded = {}
+    for p in (r.get('pool') or []):
+        if p.get('degraded'):
+            excluded[p['tier']] = '删量不足，造法失效'
+        if p.get('answer_correct'):
+            excluded[p['tier']] = '答案核验：把答案答对了，造法失效'
+    # trunc/cut 与 strong 正向 met 集完全相同 → 删/截没删掉任何得分点
+    def mset(t):
+        v = j.get(t)
+        if not v:
+            return None
+        return frozenset(x['_criterion_id'] for x in v['items']
+                         if x.get('is_positive') and x.get('met')
+                         and not x.get('judge_missing'))
+    ss = mset('strong')
+    for t in ('trunc', 'cut'):
+        if t in j and t not in excluded and ss and mset(t) == ss:
+            excluded[t] = '删/截后得分点全保留，造法失效'
+    for t in excluded:
         j.pop(t, None)
 
     rate = {t: v['rate'] for t, v in j.items()}
     strong = rate['strong']
-    weaks = [rate[t] for t in WEAK_TIERS if t in rate]
+    is_gated = r.get('rubric_form') == 'gated_answer'
+    weak_cands = ('weak',) if is_gated else WEAK_TIERS
+    weaks = [rate[t] for t in weak_cands if t in rate]
     allr = list(rate.values())
 
-    # ---- Low Signal ----
+    # ---- Low Signal（修复 A/C：口径 + 单档差）----
     reasons = []
-    gap = strong - (statistics.mean(weaks) if weaks else strong)
-    if weaks and gap < LOW_GAP:
-        reasons.append(f'强档与弱档均值差 {gap:.1%} < {LOW_GAP:.0%}')
+    if 'weak' in rate:
+        gap = strong - rate['weak']
+        gap_ref = 'weak 单档'
+    elif weaks:
+        gap = strong - (sum(weaks) / len(weaks))
+        gap_ref = f'有效弱档均值(n={len(weaks)})'
+    else:
+        gap = None
+        gap_ref = ''
+    if weaks and gap is not None and gap < LOW_GAP:
+        reasons.append(f'强档与{gap_ref}差 {gap:.1%} < {LOW_GAP:.0%}')
     std = statistics.pstdev(allr) if len(allr) > 1 else 0.0
     if len(allr) > 1 and std < LOW_STD:
         reasons.append(f'各档得分率标准差 {std:.3f} < {LOW_STD}')
@@ -78,13 +112,12 @@ def diagnose(r):
     low = {'is_defective': bool(reasons), 'reasons': reasons,
            'strong_rate': round(strong, 4),
            'weak_mean': round(statistics.mean(weaks), 4) if weaks else None,
-           'gap': round(gap, 4), 'std': round(std, 4)}
+           'gap': round(gap, 4) if gap is not None else None,
+           'gap_ref': gap_ref,
+           'std': round(std, 4),
+           'no_weak': not weaks}
 
     # ---- 标定问题：天花板 / 地板 ----
-    # 单独一类，不并进 Low Signal —— 处置方向相反：
-    #   地板（强档也拿不到分）→ 准则过严，要放松
-    #   天花板（弱档也满分）  → 准则过松，要收紧
-    # 混在一起报会让下游不知道该往哪个方向改。
     cal, cal_why = None, ''
     if strong < FLOOR_RATE:
         cal, cal_why = 'floor', (f'强档仅 {strong:.1%}，准则过严 —— '
@@ -93,30 +126,33 @@ def diagnose(r):
         cal, cal_why = 'ceiling', '所有档位都 ≥90%，准则过松，无分辨力'
     calib = {'issue': cal, 'reason': cal_why}
 
+    # 地板时 LowSignal 是冗余噪声：强档都拿不到分，各档挤在一起是必然结果，
+    # 处置方向（放松准则）已由 floor 给出，再报「拉不开分」会误导下游
+    # 往「收紧准则」方向改。数据保留，is_defective 抑制。
+    if cal == 'floor' and low['is_defective']:
+        low['is_defective'] = False
+        low['suppressed_by_floor'] = True
+
     # ---- Hackable（题级）----
-    # 强档过低时不判 Hackable：strong=0% 时「weak 0% ≥ strong 0%」恒真，
-    # 会把「准则过严，好回答也拿不到分」误报成「弱回答钻空子」——
-    # 两者的处置方向完全相反（前者要放松，后者要收紧）。
-    # 这种情况由 Low Signal 的地板效应负责报告。
     hreasons = []
+    suspect = []
     floor = strong < FLOOR_RATE
     if not floor:
         if 'adv' in rate and rate['adv'] >= strong:
             hreasons.append(f'对抗档 {rate["adv"]:.1%} ≥ 强档 {strong:.1%}')
-        for t in WEAK_TIERS:
+        if 'weak' in rate and rate['weak'] >= strong:
+            hreasons.append(f'weak 档 {rate["weak"]:.1%} ≥ 强档 {strong:.1%}')
+        # trunc/cut 平分降级为待复核（修复 D）：多为构造失效伪影
+        for t in ('trunc', 'cut'):
             if t in rate and rate[t] >= strong:
-                hreasons.append(f'{t} 档 {rate[t]:.1%} ≥ 强档 {strong:.1%}')
+                suspect.append(f'{t} 档 {rate[t]:.1%} ≥ 强档 {strong:.1%}')
 
     # ---- Hackable（准则级）+ 弱档造法一致性 ----
-    # **只看正向准则**。负向准则的 met 语义相反：met=true 表示「这个错误出现了」，
-    # 所以弱档 met、强档不 met 恰恰是正确行为（弱档确实犯了错）。
-    # 不区分就会把每一条工作正常的负向准则都误报成缺陷。
     pos_cids = {c.get('_criterion_id') for c in (r.get('rubrics') or [])
                 if c.get('is_positive')}
     met_of = {}
     for t, v in j.items():
         for x in v['items']:
-            # 判分器漏返回的条目不参与判定，否则「缺数据」会被当成「未满足」
             if x.get('judge_missing'):
                 continue
             met_of[(x['_criterion_id'], t)] = x['met']
@@ -132,33 +168,36 @@ def diagnose(r):
                 surface.append({'_criterion_id': cid, 'tier': t})
                 break
         # 三种造法结论不一致 → 测的是长度或结构而非内容。
-        # 必须三档齐全才判：少一档时「不一致」可能只是缺数据，
-        # 而 degraded 档已在上面被剔除，这里天然只看有效档。
         avail = [t for t in WEAK_TIERS if (cid, t) in met_of]
         if len(avail) == len(WEAK_TIERS):
             vals = {t: met_of[(cid, t)] for t in avail}
             if len(set(vals.values())) > 1:
                 inconsistent.append({'_criterion_id': cid, **vals})
 
-    if surface:
+    if surface and not floor:
+        # 地板时强档自身缺分，surface 翻转多为「准则过严、措辞卡死」的
+        # 副作用（q0377/q0408），处置方向是放松而非收紧，不报 Hackable。
         hreasons.append(f'{len(surface)} 条正向准则在弱/对抗档满足但强档未满足')
 
     hack = {'is_defective': bool(hreasons), 'reasons': hreasons,
+            'suspect_ties': suspect,
             'surface_criteria': surface,
             'inconsistent_across_weak': inconsistent,
             'suppressed_by_floor': floor}
     return {'low_signal': low, 'hackable': hack, 'calibration': calib,
-            'skip_reason': '', 'degraded_tiers': sorted(degraded)}
+            'skip_reason': '',
+            'excluded_tiers': {t: why for t, why in sorted(excluded.items())}}
 
 
 def main():
     recs = stage.read_jsonl(SRC)
     print(f'步骤 11Lc Consequential 诊断: {len(recs)} 题, 源={SRC}')
     print(f'  判据: Low Signal(gap<{LOW_GAP:.0%} 或 std<{LOW_STD}) / '
-          f'Hackable(对抗档或弱档 ≥ 强档)')
+          f'Hackable(对抗档或 weak 档 ≥ 强档，或准则级翻转)')
 
-    res, low_n, hack_n, skip_n = [], 0, 0, 0
+    res, low_n, hack_n, skip_n, susp_n = [], 0, 0, 0, 0
     cal_stat = Counter()
+    excl_stat = Counter()
     all_surface, all_incons = [], []
     for r in recs:
         d = diagnose(r)
@@ -168,9 +207,12 @@ def main():
             low_n += 1
         if (d['hackable'] or {}).get('is_defective'):
             hack_n += 1
+        susp_n += len((d['hackable'] or {}).get('suspect_ties', []))
         issue = (d.get('calibration') or {}).get('issue')
         if issue:
             cal_stat[issue] += 1
+        for t, why in d.get('excluded_tiers', {}).items():
+            excl_stat[f'{t}({why})'] += 1
         all_surface += [{**x, 'rid': r['rid']}
                         for x in (d['hackable'] or {}).get('surface_criteria', [])]
         all_incons += [{**x, 'rid': r['rid']}
@@ -186,10 +228,15 @@ def main():
     print(f'  有效样本    : {valid} 题')
     print(f'  Low Signal  : {low_n}/{valid} 题 区分不开')
     print(f'  Hackable    : {hack_n}/{valid} 题 可被钻空子')
+    if susp_n:
+        print(f'  待复核      : {susp_n} 处 trunc/cut 平分（多为构造失效伪影，'
+              f'不计入 Hackable）')
     if cal_stat:
         print(f'  标定问题    : ' + '  '.join(
             f'{"地板(准则过严)" if k == "floor" else "天花板(准则过松)"}={v}'
             for k, v in cal_stat.most_common()))
+    if excl_stat:
+        print(f'  剔除档位    : ' + '  '.join(f'{k}={v}' for k, v in excl_stat.most_common()))
     print(f'  表面特征准则: {len(all_surface)} 条（**正向**准则在弱/对抗档满足'
           f'但强档未满足）')
     print(f'  造法不一致  : {len(all_incons)} 条（trunc/cut/weak 结论打架 → '
@@ -219,9 +266,13 @@ def main():
             marks.append('LowSignal')
         if ha['is_defective']:
             marks.append('Hackable')
+        if ha.get('suspect_ties'):
+            marks.append(f'待复核×{len(ha["suspect_ties"])}')
+        weak_mean = f'{lo["weak_mean"]:.1%}' if lo['weak_mean'] is not None else '—'
+        gap = f'{lo["gap"]:.1%}' if lo['gap'] is not None else '—'
         print(f'    {r["rid"]}  {r.get("rubric_form",""):<13}'
-              f'强={lo["strong_rate"]:6.1%} 弱均={lo["weak_mean"] or 0:6.1%} '
-              f'差={lo["gap"]:6.1%} std={lo["std"]:.3f}  '
+              f'强={lo["strong_rate"]:6.1%} 弱均={weak_mean:>6} '
+              f'差={gap:>6} std={lo["std"]:.3f}  '
               f'{" + ".join(marks) if marks else "✓ 通过"}')
         why_all = ([cal['reason']] if cal.get('reason') else []) \
             + lo['reasons'] + ha['reasons']
