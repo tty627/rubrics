@@ -50,7 +50,10 @@ def load(path=None, check=True):
                   timeout=d.get('timeout', 180), roles=d.get('roles', []),
                   reasoning=d.get('reasoning', False),
                   max_tokens=d.get('max_tokens', 4096),
-                  no_think_extra=d.get('no_think_extra'))
+                  no_think_extra=d.get('no_think_extra'),
+                  # 键不存在 → 用默认温度；键存在但为 null → 不发 temperature 字段
+                  temperature=(d['temperature'] if 'temperature' in d
+                               else '__default__'))
         pg = d.get('pool_group')
         if pg:
             pools.setdefault(pg, []).append(m)
