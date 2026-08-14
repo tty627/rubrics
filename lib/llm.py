@@ -125,10 +125,14 @@ class Model:
     no_think_extra: 关闭思维链的厂商私有参数，形如
                     {"chat_template_kwargs": {"enable_thinking": false}}
                     各家写法不同，故放配置而不写死在代码里
+    temperature   : 覆盖默认温度。填 null 表示**整个字段不发**——
+                    Claude 系和 kimi 经网关代理时收到 temperature=0.0 会返回
+                    HTTP 400，省略该字段即正常。默认 0.0 是为了可复现。
     """
 
     def __init__(self, name, model_id, base_url, api_key, family=None, timeout=180,
-                 roles=None, reasoning=False, max_tokens=4096, no_think_extra=None):
+                 roles=None, reasoning=False, max_tokens=4096, no_think_extra=None,
+                 temperature='__default__'):
         self.name = name
         self.model_id = model_id
         self.base_url = base_url.rstrip('/')
@@ -138,6 +142,8 @@ class Model:
         self.roles = list(roles or [])
         self.reasoning = reasoning
         self.max_tokens = max_tokens
+        # '__default__' = 用调用方传的温度；None = 整个字段不发；数值 = 强制覆盖
+        self.temperature = temperature
         self.no_think_extra = no_think_extra or {}
 
 
@@ -245,6 +251,13 @@ def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
         try:
             payload = {'model': ep.model_id, 'messages': messages,
                        'temperature': temperature, 'max_tokens': cur, **send}
+            # 按端点覆盖温度。Claude/kimi 经网关收到 temperature=0.0 会 400，
+            # 配置里填 "temperature": null 即整个字段不发。
+            ov = getattr(ep, 'temperature', '__default__')
+            if ov is None:
+                payload.pop('temperature', None)
+            elif ov != '__default__':
+                payload['temperature'] = ov
             req = urllib.request.Request(
                 f'{ep.base_url}/chat/completions',
                 data=json.dumps(payload, ensure_ascii=False).encode(),
