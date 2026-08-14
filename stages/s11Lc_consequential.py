@@ -35,6 +35,11 @@ RIFT 八失效模式里唯一需要回复池的两个，所以单独一步，跑
   D. trunc/cut 平分降级为「待复核」（suspect_ties），不再直接判 defective：
      这类平分多为构造失效伪影，之前 24 个 Hackable 里 15 个是它。
      adv/weak 平分与准则级翻转仍是 defective 级信号。
+  E. （2026-08-14 深夜）gated 题收紧：对抗档「过程全对、答案错」是设计使然，
+     gated 的闸门才是判据 —— 过程级准则在 adv/weak 上的翻转降级为待复核
+     （实测 q0301 对抗档正确推导+空集结论，过程准则翻转造成假 Hackable）；
+     gated 弱档追平强档 = 疑似把答案答对（canon 缺失拦不住），弱档对 gap
+     度量作废并降级待复核；无有效弱档时 LowSignal 抑制（测量受限非 rubric 缺陷）。
 """
 import json, os, statistics, sys
 from collections import Counter, defaultdict
@@ -70,6 +75,8 @@ def diagnose(r):
             excluded[p['tier']] = '删量不足，造法失效'
         if p.get('answer_correct'):
             excluded[p['tier']] = '答案核验：把答案答对了，造法失效'
+        if p.get('weak_not_weak'):
+            excluded[p['tier']] = '弱档复核：不够弱，造法失效'
     # trunc/cut 与 strong 正向 met 集完全相同 → 删/截没删掉任何得分点
     def mset(t):
         v = j.get(t)
@@ -88,8 +95,12 @@ def diagnose(r):
     rate = {t: v['rate'] for t, v in j.items()}
     strong = rate['strong']
     is_gated = r.get('rubric_form') == 'gated_answer'
+    # gated 题弱档追平强档 = 弱档疑似把答案答对了（canon 缺失时程序化核验拦不住）。
+    # 这是 pool 造法问题，不是 rubric 缺陷 —— gap 度量随之失效，弱档作废。
+    weak_invalid = is_gated and 'weak' in rate and rate['weak'] >= strong
     weak_cands = ('weak',) if is_gated else WEAK_TIERS
-    weaks = [rate[t] for t in weak_cands if t in rate]
+    weaks = [rate[t] for t in weak_cands
+             if t in rate and not (t == 'weak' and weak_invalid)]
     allr = list(rate.values())
 
     # ---- Low Signal（修复 A/C：口径 + 单档差）----
@@ -117,6 +128,12 @@ def diagnose(r):
            'std': round(std, 4),
            'no_weak': not weaks}
 
+    # 无有效弱档（gated 弱档答对被作废 / 全部造法失效）时，各档挤在一起是
+    # 测量受限，不是 rubric 拉不开分 —— 抑制 defective，数据保留。
+    if low['no_weak'] and low['is_defective']:
+        low['is_defective'] = False
+        low['suppressed_no_weak'] = True
+
     # ---- 标定问题：天花板 / 地板 ----
     cal, cal_why = None, ''
     if strong < FLOOR_RATE:
@@ -141,7 +158,11 @@ def diagnose(r):
         if 'adv' in rate and rate['adv'] >= strong:
             hreasons.append(f'对抗档 {rate["adv"]:.1%} ≥ 强档 {strong:.1%}')
         if 'weak' in rate and rate['weak'] >= strong:
-            hreasons.append(f'weak 档 {rate["weak"]:.1%} ≥ 强档 {strong:.1%}')
+            if is_gated:
+                suspect.append(f'weak 档 {rate["weak"]:.1%} ≥ 强档 {strong:.1%}'
+                               f'（gated：疑似把答案答对，pool 造法问题）')
+            else:
+                hreasons.append(f'weak 档 {rate["weak"]:.1%} ≥ 强档 {strong:.1%}')
         # trunc/cut 平分降级为待复核（修复 D）：多为构造失效伪影
         for t in ('trunc', 'cut'):
             if t in rate and rate[t] >= strong:
@@ -174,10 +195,15 @@ def diagnose(r):
             if len(set(vals.values())) > 1:
                 inconsistent.append({'_criterion_id': cid, **vals})
 
-    if surface and not floor:
-        # 地板时强档自身缺分，surface 翻转多为「准则过严、措辞卡死」的
-        # 副作用（q0377/q0408），处置方向是放松而非收紧，不报 Hackable。
-        hreasons.append(f'{len(surface)} 条正向准则在弱/对抗档满足但强档未满足')
+    if surface:
+        # gated 题的对抗档过程本来就该全对（「答案错但过程完整」），过程级
+        # 准则在 adv/weak 上翻转是设计使然，闸门才是判据 —— 降级待复核。
+        # open 题无闸门，翻转仍是最强的准则级 Hackable 信号（q0167/q0336）。
+        if is_gated:
+            suspect.append(f'{len(surface)} 条正向准则在弱/对抗档满足但强档未满足'
+                           f'（gated：过程级翻转，闸门才是判据）')
+        elif not floor:
+            hreasons.append(f'{len(surface)} 条正向准则在弱/对抗档满足但强档未满足')
 
     hack = {'is_defective': bool(hreasons), 'reasons': hreasons,
             'suspect_ties': suspect,

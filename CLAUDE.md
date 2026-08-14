@@ -169,11 +169,11 @@ python3 tools/watch.py --tokens # 展开 token 明细
 5. ~~**闸门项不进 S_max 分母**(步骤 9)~~ —— **导师 2026-08-13 推翻**：
    score 直接当权重用，不在流水线内归一，归一化延后到判分阶段。
    因此 `full_mark = sum(正向 score)` 保持原始整数，闸门项计入分母；
-   判分侧自行处理闸门的 0/1 语义。`legacy/full_path/s09_normalize.py` 随之作废。
-   **导师 2026-08-14 明确交付 schema 口径**：`score` 的正负号即加分/扣分（方向），
-   `is_positive` 是 0/1 阀门标记（原 `is_gate` 语义，该字段已删）。
-   ⚠️ 字段语义分叉：内部 `data/*.jsonl` 的 `is_positive` 仍是方向（改它要重跑生成），
-   `outputs/` 两份导出档的 `is_positive` 是阀门；唯一转换点在 `export_advisor_schema.py`。
+   交付档用准则级 `is_gate` 标出闸门是哪一条，判分侧自行处理 0/1 语义。
+   `legacy/full_path/s09_normalize.py` 随之作废。
+   **字段语义（导师 2026-08-14 复核后确认）**：`is_positive` 是正向/负向（方向），
+   `is_gate` 是 0/1 阀门标记。内部 `data/*.jsonl` 与 `outputs/` 导出档口径一致，
+   不存在语义分叉。
 
 ## Implementation Status
 
@@ -246,6 +246,19 @@ q0388 三轮收敛（过松→过严→适中）、q0377 两轮——LLM 重写�
 Phase 4 全量前最后一个工具缺口：s10L 对 canon 缺失的 adv/weak 档加廉价
 LLM 复核（结论是否等于标准答案）。最终链：
 sample48 → s10L_pool48 → s12L_judged48 → s11Lc_cons48 → s11Ld_remedied48。
+
+**2026-08-14 深夜 试点闭环（48 题 Hackable 24→0）**：
+- s10L 修复 F：canon 缺失的 adv/weak 档加 judge 模型相对复核（拿 strong 当
+  参考答案，只比最终结论，宁放过不误杀），拦截 14 档「答对」造法失败。
+  open 题不做「弱档不够弱」文本复核（文本质量≠rubric 得分，实测误杀）。
+- s12L SYS 第 4 条纪律：答案类准则只认**最终结论**——对抗档「过程全对、
+  最终答案写空集」曾拿 80% 与强档打平（q0301），复判后 80%→10%。
+- s11Lc 修复 E：gated 题收紧——对抗档过程全对是设计使然，过程级准则在
+  adv/weak 的翻转降级待复核；gated 弱档追平=疑似答对（weak 对 gap 作废）；
+  无有效弱档时 LowSignal 抑制。
+终态：Hackable=0、LowSignal=3（q0058/q0433 open 弱档不弱 + q0113 判分
+方差边缘）、floor=0、跳过=1、待复核 4 处（gated 弱档疑似答对）。**测量
+工具闭环：缺陷可处置、处置可复测、假信号被源头拦截，Phase 4 可放量 452。**
 
 **交付审查发现**（`outputs/rubrics_advisor_lean.jsonl` 全量统计，2026-08-13）：
 - 35 条准则引用「标准答案」但交付档里没有标准答案 → 判分器无法独立执行

@@ -44,6 +44,16 @@
   D. cut 删除量 <8% 自动重试一次（强化删除量指令）；仍不达标标 degraded。
   E. 两趟执行：mid/weak/adv/strong_regen 先跑，定稿 strong 后再造 cut——
      cut 必须基于最终 strong，退化题重生成后截断/删点才不会错位。
+  F. （2026-08-14 傍晚）canon 缺失时的 LLM 复核：s05L 没抽出 canonical
+     答案的题（48 题里 11/16 道 gated），程序化反向核验无从下手。用 judge
+     角色模型做**相对判定**——拿 strong 档当参考答案，只比较最终结论：
+     - adv（verifiable 无 canon）：「对抗档的最终结论是否与强档一致/正确」
+       → 一致则造法失败，重造一次，仍一致标 answer_correct；
+     - weak（gated 无 canon）：「弱档是否把答案答对了」→ 同处理。
+     open 题的弱档**不做**文本质量复核（文本完整 ≠ rubric 得分，实测误杀），
+     弱档质量由 s11Lc 的 gap 实测反映。
+     把审计残留的 pool 型假 Hackable（q0045/q0238/q0242/q0301/q0445/q0448）
+     在源头挡掉。
 """
 import json, os, re, sys
 from collections import Counter
@@ -134,6 +144,28 @@ SYS_WEAK_GATED_RETRY = '''上一版你把答案写对了，没造出「弱档」
 
 只输出回答正文。'''
 
+# ---- LLM 复核（canon 缺失时的兜底，见 docstring F）----
+SYS_CHECK_ADV = '''你在检查一份**对抗性回答**的造法是否失败。造法要求：
+过程写得详尽专业，但**最终结论是错的**。给你强档参考回答（可视为正确答案）。
+
+只比较**最终结论/答案**（通常在末尾）。过程相似不算。
+- 对抗档的最终答案与强档**完全相同或同样正确** → flag=true（造法失败）
+- 最终答案不同/确实错了 → flag=false
+- 无法确定 → flag=false（宁放过不误杀）
+
+只输出 JSON：{"flag": true/false, "why": "不超过30字"}'''
+
+SYS_CHECK_WEAK_GATED = '''你在检查一份「弱档回答」的造法是否失败。造法要求：
+弱档应方向大致对但关键处出错、最终答案不能正确。给你强档参考回答
+（可视为正确答案）。
+
+只比较**最终答案/结论**（通常在末尾）。过程相似不算。
+- 弱档的最终答案与强档**完全相同或同样正确** → flag=true（造法失败）
+- 确实答错/残缺 → flag=false
+- 无法确定 → flag=false（宁放过不误杀）
+
+只输出 JSON：{"flag": true/false, "why": "不超过30字"}'''
+
 
 def strong_of(r):
     """强档 = 现成回复里排除锚定那条。硬约束第 1 条：待评 ≠ 锚。
@@ -189,9 +221,11 @@ def main():
     m_strong = stage.pick('RP_M_POOL_STRONG', 'generator')
     m_mid = stage.pick('RP_M_POOL_MID', 'pool_mid')
     m_weak = stage.pick('RP_M_POOL_WEAK', 'pool_weak')
+    m_check = stage.pick('RP_M_POOL_CHECK', 'judge')
     recs = stage.read_jsonl(SRC)
     print(f'步骤 10L 回复池: {len(recs)} 题, 源={SRC}')
-    print(f'  强档重生成={m_strong.name}  中档={m_mid.name}  弱档={m_weak.name}')
+    print(f'  强档重生成={m_strong.name}  中档={m_mid.name}  弱档={m_weak.name}'
+          f'  复核={m_check.name}')
     n_shared = sum(1 for r in recs if strong_of(r)[2])
     if n_shared:
         print(f'  ⚠️  单回复题 {n_shared} 个：强档与锚共用，违反硬约束第 1 条，已标 pool_shared')
@@ -216,6 +250,17 @@ def main():
 
     # rid -> 最终 strong（cut/trunc 都以它为准）
     strong_map = {}
+
+    def llm_check(sys_p, q, strong_txt, cand_txt):
+        """廉价复核：flag=true 表示造法失败（答对了/不够弱）。"""
+        u = (f'【题目】\n{q}\n\n'
+             f'【强档参考回答】\n{(strong_txt or "")[:4000]}\n\n'
+             f'【待检查回答】\n{(cand_txt or "")[:4000]}\n')
+        obj, _ = stage.json_call(m_check,
+                                 [{'role': 'system', 'content': sys_p},
+                                  {'role': 'user', 'content': u}],
+                                 stage='s10L_check')
+        return bool(obj.get('flag')), str(obj.get('why', ''))[:60]
 
     def one(job):
         rid, tier = job
@@ -278,6 +323,39 @@ def main():
                 txt, meta['fixed'] = txt2, True
             else:
                 meta['answer_correct'] = True
+
+        # ---- LLM 复核（canon 缺失时的兜底，审计修复 F）----
+        # 只对 gated/verifiable 且 canonical 缺失的题做「结论是否等于强档」复核。
+        # open 题不做「弱档不够弱」复核：文本完整性 ≠ rubric 得分（实测 q0005
+        # 弱档文本完整但判分仅 20%，文本复核会误杀）；open 题的弱档质量由
+        # s11Lc 的 gap 实测直接反映。
+        strong_ref = strong_of(r)[1]
+        if tier == 'adv' and ver and not canon_ok and txt:
+            flag, _ = llm_check(SYS_CHECK_ADV, q, strong_ref, txt)
+            if flag:
+                meta['retried'] = True
+                txt2, _ = stage.llm.call(mdl,
+                                         [{'role': 'system', 'content': SYS_ADV_VER_RETRY},
+                                          {'role': 'user', 'content': q}],
+                                         stage='s10L_adv_retry')
+                txt2 = (txt2 or '').strip()
+                if txt2 and not llm_check(SYS_CHECK_ADV, q, strong_ref, txt2)[0]:
+                    txt, meta['fixed'] = txt2, True
+                else:
+                    meta['answer_correct'] = True
+        if tier == 'weak' and ver and not canon_ok and txt:
+            flag, _ = llm_check(SYS_CHECK_WEAK_GATED, q, strong_ref, txt)
+            if flag:
+                meta['retried'] = True
+                txt2, _ = stage.llm.call(m_weak,
+                                         [{'role': 'system', 'content': SYS_WEAK_GATED_RETRY},
+                                          {'role': 'user', 'content': q}],
+                                         stage='s10L_weak_retry2')
+                txt2 = (txt2 or '').strip()
+                if txt2 and not llm_check(SYS_CHECK_WEAK_GATED, q, strong_ref, txt2)[0]:
+                    txt, meta['fixed'] = txt2, True
+                else:
+                    meta['answer_correct'] = True
         if tier == 'cut' and txt:
             strong = strong_map[rid][1]
             ratio = 1 - len(txt) / max(len(strong), 1)
@@ -330,6 +408,8 @@ def main():
             meta = meta or {}
             if meta.get('answer_correct'):
                 p['answer_correct'] = True
+            if meta.get('weak_not_weak'):
+                p['weak_not_weak'] = True
             if meta.get('retried') and meta.get('fixed'):
                 p['how'] += '（已触发重造）'
             pool.append(p)
@@ -357,6 +437,8 @@ def main():
         w_how = f'{m_weak.name} 生成'
         if wm.get('answer_correct'):
             w_how += '（⚠️答案核验：把答案答对了，本档失效）'
+        if wm.get('weak_not_weak'):
+            w_how += '（⚠️复核：不够弱，本档失效）'
         add('weak', wt, w_how, wm)
 
         at, am = gen.get((r['rid'], 'adv'), ('', {}))
@@ -396,6 +478,11 @@ def main():
     if ac:
         print(f'  ⚠️  答案核验失败 {len(ac)} 档（重试后仍把答案答对，诊断侧将剔除）: '
               + ', '.join(f'{a}/{b}' for a, b in ac))
+    nw = [(r['rid'], p['tier']) for r in res for p in r['pool']
+          if p.get('weak_not_weak')]
+    if nw:
+        print(f'  ⚠️  弱档复核失败 {len(nw)} 档（重试后仍不够弱，诊断侧将剔除）: '
+              + ', '.join(f'{a}/{b}' for a, b in nw))
 
     sd = [(r['rid'], r['strong_degenerate_reason']) for r in res
           if r.get('strong_degenerate')]
