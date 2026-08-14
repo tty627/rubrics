@@ -85,6 +85,9 @@ SYS_SPLIT = f'''你在修一条评分准则。它被诊断为**非原子** —�
 拆成「说了A」「说了B」两条后就无法回答「区别是什么」），
 返回 split=false —— 这说明诊断误判了，原准则其实是原子的。
 
+**负向项（扣分项）不要拆**：扣分项分值只有 -2/-3，而扣分项不允许出现 -1，
+拆成两条必然破坏分值下限或撑大扣分总量 —— 负向项一律返回 split=false。
+
 {dimensions.prompt_block()}
 
 只输出 JSON：
@@ -216,20 +219,28 @@ def norm(items, orig, n_want=None):
     if n_want:
         out = out[:n_want]
 
-    # 分值守恒：按模型给的比例重新分配原分值，保证每条至少 1 分
+    # 分值守恒：按模型给的比例重新分配原分值。
+    # 正向每条至少 1 分；负向每条至少 2 分 —— prompt 口径「扣分项一律 -2 或 -3」，
+    # 不允许拆出 -1 槽位（旧实现曾把 -2/-3 拆出 63 条 -1 流进交付档）。
+    # 负向 -2/-3 拆两条保不住 2 分下限 → 返回 []，保留原条不拆。
     target = abs(orig['score'])
     if len(out) == 1:
         out[0]['score'] = target
     else:
+        floor = 2 if not orig['is_positive'] else 1
+        if target < floor * len(out):
+            return []
         tot = sum(c['score'] for c in out) or len(out)
-        alloc = [max(1, round(target * c['score'] / tot)) for c in out]
-        # 四舍五入后可能不等于 target，把差额加减到最大的那条
+        alloc = [max(floor, round(target * c['score'] / tot)) for c in out]
+        # 四舍五入后不等于 target：从模型给分最大的那条开始逐分补齐，不低于下限
         diff = target - sum(alloc)
-        if diff:
-            i = alloc.index(max(alloc))
-            alloc[i] = max(1, alloc[i] + diff)
-        # 仍对不上（如 target=1 却要拆 2 条）→ 不拆
-        if sum(alloc) != target:
+        order = sorted(range(len(alloc)), key=lambda i: -out[i]['score'])
+        for i in order:
+            step = 1 if diff > 0 else -1
+            while diff and alloc[i] + step >= floor:
+                alloc[i] += step
+                diff -= step
+        if diff:          # 补不齐（target 太小拆不开）→ 不拆
             return []
         for c, a in zip(out, alloc):
             c['score'] = a

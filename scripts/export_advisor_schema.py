@@ -41,10 +41,13 @@ sys.path.insert(0, REPO)
 from lib import rubric
 
 DELIVER_FIELDS = ('criteria', 'score', 'reason', 'dimension', 'is_positive')
-# 内部档额外带的准则级字段
+# 内部档额外带的准则级字段。
+# 2026-08-14 修：此前漏了 _flag_subjective_threshold / _flag_topic_list，
+# 两个质量标记被静默丢弃（源数据 1 条 subjective_threshold，内部档 0 条）。
 INTERNAL_FIELDS = ('_criterion_id', '_dim_from_table', '_perspective_ids',
                    '_scenario_ids', '_flag_vague', '_flag_no_groundtruth',
-                   '_flag_cliff', '_flag_mention_only')
+                   '_flag_cliff', '_flag_mention_only',
+                   '_flag_subjective_threshold', '_flag_topic_list')
 
 
 def build_record(r, full=False):
@@ -203,12 +206,13 @@ def main():
     if empty:
         print(f'\n  ⚠️  空结果 : {len(empty)} 题 {empty[:8]}')
 
-    # 质量标记汇总（T0-4 的 parse 护栏打的标，只在源里存在时才有）
+    # 质量标记汇总（s04L 的 flag() 护栏打的标，只在源里存在时才有）
     flags = Counter()
     for r in raw:
         for c in r.get('rubrics') or []:
-            for k in ('_flag_vague', '_flag_no_groundtruth',
-                      '_flag_cliff', '_flag_mention_only'):
+            for k in ('_flag_vague', '_flag_no_groundtruth', '_flag_cliff',
+                      '_flag_mention_only', '_flag_subjective_threshold',
+                      '_flag_topic_list'):
                 if c.get(k):
                     flags[k] += 1
     if flags:
