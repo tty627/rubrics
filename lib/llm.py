@@ -45,6 +45,56 @@ def _preview(messages):
     return ' '.join(str(usr).split())[:EV_CHARS], ' '.join(str(sys_).split())[:60]
 
 
+# --- token 计量 -----------------------------------------------------------
+# 外部 API 按 token 计费，必须能随时回答「到目前为止一共花了多少」。
+# 事件流水 _events.jsonl 里虽有 usage，但它按 RP_EV_MAX 滚存，历史会被截掉，
+# 累计值算不准。所以另立一本**只增不减、永不滚存**的账：
+#   cache/_tokens.json   聚合总账（按 stage × model 分组）
+# 用法：python3 scripts/token_report.py
+TOKENS = os.environ.get('RP_TOKENS', os.path.join(CACHE_DIR, '_tokens.json'))
+_tlock = threading.Lock()
+
+
+def meter(stage, model_name, model_id, usage):
+    """把一次调用的 token 记进总账。缓存命中不计（没有真实消耗）。
+
+    写失败一律吞掉 —— 计量是观测设施，不能反过来弄挂流水线。
+    """
+    if not usage:
+        return
+    try:
+        pt = int(usage.get('prompt_tokens') or 0)
+        ct = int(usage.get('completion_tokens') or 0)
+        rt = int((usage.get('completion_tokens_details') or {}).get(
+            'reasoning_tokens') or usage.get('reasoning_tokens') or 0)
+        cached = int((usage.get('prompt_tokens_details') or {}).get(
+            'cached_tokens') or 0)
+        if not (pt or ct):
+            return
+        key = f'{stage}|{model_name}|{model_id}'
+        with _tlock:
+            try:
+                with open(TOKENS, encoding='utf-8') as f:
+                    db = json.load(f)
+            except Exception:
+                db = {}
+            e = db.setdefault(key, {'stage': stage, 'model': model_name,
+                                    'model_id': model_id, 'calls': 0,
+                                    'prompt': 0, 'completion': 0,
+                                    'reasoning': 0, 'cached_prompt': 0})
+            e['calls'] += 1
+            e['prompt'] += pt
+            e['completion'] += ct
+            e['reasoning'] += rt
+            e['cached_prompt'] += cached
+            tmp = TOKENS + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(db, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, TOKENS)      # 原子替换，并发下不会读到半个文件
+    except Exception:
+        pass
+
+
 def _log(**rec):
     global _seq
     if not EVENTS:
@@ -242,6 +292,7 @@ def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
             _log(ev='end', id=eid, stage=stage, model=model.name, dt=time.time() - t0,
                  usage=usage, nothink=nothink, endpoint=ep.name,
                  out=' '.join(text.split())[:EV_CHARS])
+            meter(stage, model.name, ep.model_id, usage)
             if pool:
                 pool.release(ep)
             return text, {'cached': False, 'model': model.name, 'usage': usage,
