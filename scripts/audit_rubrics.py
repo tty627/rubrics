@@ -44,8 +44,9 @@ SPECULATIVE = re.compile(r'多半|可能是|大概率|推测|想必|应该是')
 def audit(path):
     recs = [json.loads(l) for l in open(path, encoding='utf-8') if l.strip()]
     allc = [(r, c) for r in recs for c in r.get('rubrics', [])]
-    pos = [(r, c) for r, c in allc if c.get('is_positive')]
-    neg = [(r, c) for r, c in allc if not c.get('is_positive')]
+    # 交付档口径（2026-08-14）：方向看 score 符号；is_positive 是 0/1 阀门标记
+    pos = [(r, c) for r, c in allc if c['score'] > 0]
+    neg = [(r, c) for r, c in allc if c['score'] < 0]
     n_q, n_c = len(recs), len(allc)
     m = {'_path': path, '_n_q': n_q, '_n_c': n_c}
 
@@ -72,7 +73,7 @@ def audit(path):
               f'(导师口径：原始权重，不归一)')
     bad_fm = sum(1 for r in recs
                  if r.get('full_mark') != sum(c['score'] for c in r.get('rubrics', [])
-                                              if c.get('is_positive')))
+                                              if c['score'] > 0))
     m['full_mark 与正项和不符'] = bad_fm
 
     # ---- schema 完整性 ----
@@ -80,9 +81,9 @@ def audit(path):
     for f in ('rubric_form', 'blocks'):
         n = sum(1 for r in recs if r.get(f))
         print(f'  {f:<12} {n}/{n_q} 题')
-    n_gate = sum(1 for _, c in allc if c.get('is_gate'))
+    n_gate = sum(1 for _, c in allc if c.get('is_positive'))
     n_gform = sum(1 for r in recs if r.get('rubric_form') == 'gated_answer')
-    print(f'  is_gate      {n_gate} 条 / gated_answer {n_gform} 题')
+    print(f'  阀门(is_positive) {n_gate} 条 / gated_answer {n_gform} 题')
     m['闸门丢失'] = max(0, n_gform - n_gate)
 
     # ---- 可判定性 ----
@@ -126,17 +127,17 @@ def audit(path):
         '过拟合参考错误，答成别的就逃掉')
 
     # verifiable 答案项占比。
-    # 口径按 is_gate 而非 dimension=='答案准确性'：s04Lb 拆悬崖项时会把一条
-    # +8 拆成「规则对不对」+「条目全不全」，后者常落到「要点完整性」维度，
+    # 口径按阀门标记（交付档 is_positive）而非 dimension=='答案准确性'：s04Lb 拆悬崖项
+    # 时会把一条 +8 拆成「规则对不对」+「条目全不全」，后者常落到「要点完整性」维度，
     # 但它仍是答案判据的一半。只认单一维度会把拆分误报成占比下降。
     ver = [r for r in recs if r.get('question_type') == 'verifiable' and r.get('full_mark')]
     if ver:
         ratios = []
         for r in ver:
-            a = sum(c['score'] for c in r['rubrics'] if c.get('is_gate'))
+            a = sum(c['score'] for c in r['rubrics'] if c.get('is_positive'))
             if not a:      # 没标闸门的（如 multi_part 路由）退回按维度算
                 a = sum(c['score'] for c in r['rubrics']
-                        if c.get('is_positive') and c.get('dimension') == '答案准确性')
+                        if c['score'] > 0 and c.get('dimension') == '答案准确性')
             ratios.append(a / r['full_mark'])
         off = sum(1 for x in ratios if not 0.6 <= x <= 0.8)
         print(f'  {"❌" if off > len(ver) * 0.2 else "✅"} '

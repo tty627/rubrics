@@ -92,17 +92,19 @@ data/s11Lb_remedied.jsonl
 
 ```
 outputs/rubrics_advisor_lean.jsonl
-  ├─ 来源: 从 data/s04L_rubric.jsonl 或 data/s11Lb_remedied.jsonl 导出
+  ├─ 来源: 从 data/s04Lb_split.jsonl 导出（--src 指定，默认源是未拆分版，勿用）
   ├─ 内容: 只保留交付字段，去掉内部字段（_开头的）
   ├─ 交付字段:
   │   ├─ rid, xlsx_row, question, subject, question_type, intent
   │   ├─ full_mark: 满分
   │   └─ rubrics[]: 
   │       ├─ criteria: 准则文本
-  │       ├─ score: 分值
+  │       ├─ score: 带符号分值，正负号即加分/扣分（方向只看这里）
   │       ├─ reason: 原因
   │       ├─ dimension: 维度
-  │       └─ is_positive: 正向/负向
+  │       └─ is_positive: 0/1 阀门标记（导师 2026-08-14 口径）——
+  │            true = gated_answer 题的答案判据，没拿到整题不得分；
+  │            ⚠️ 与内部 data/*.jsonl 的 is_positive（=方向）语义不同
   └─ 用途: 给导师展示，填入 Excel
 ```
 
