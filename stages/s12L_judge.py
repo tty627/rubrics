@@ -23,7 +23,7 @@ import json, os, re, sys
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage
+from lib import stage, rubric
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
 THINK = stage.envflag('RP_THINK', True)
@@ -122,11 +122,9 @@ def main():
         canon = (r.get('answer_canonical') or '').strip()
         if (r.get('rubric_form') == 'gated_answer' and canon
                 and r.get('answer_sound', True)):
-            pos = [c for c in rubrics if c['is_positive']]
-            s_max = sum(c['score'] for c in pos) if pos else 0
-            gates = [i for i, c in enumerate(rubrics, 1)
-                     if c['is_positive'] and c['score'] >= 4
-                     and s_max and c['score'] / s_max >= 0.3]
+            # 闸门判定口径 = lib/rubric.gate_indices
+            # （与 s11Lb 豁免、交付档 is_gate 同一规则），下标转 1 起对齐 idx
+            gates = [i + 1 for i in rubric.gate_indices(rubrics)]
             if len(gates) == 1:
                 ok, hit = check_program(kind, canon, resp['text'])
                 if ok:
@@ -219,8 +217,8 @@ def main():
 
     res = []
     for r in recs:
-        pos = [c for c in r.get('rubrics') or [] if c['is_positive']]
-        s_max = sum(c['score'] for c in pos)
+        pos = rubric.positives(r.get('rubrics') or [])
+        s_max = rubric.s_max(r.get('rubrics') or [])
         scored = {}
         for p in r.get('pool') or []:
             j = agg[r['rid']].get(p['tier'])
@@ -228,7 +226,7 @@ def main():
                 continue
             scored[p['tier']] = {
                 'score': j['score'], 's_max': s_max,
-                'rate': round(j['score'] / s_max, 4) if s_max else 0.0,
+                'rate': rubric.rate(j['score'], s_max),
                 'judge_incomplete': bool(j.get('missing')),
                 'n_missing': len(j.get('missing') or []),
                 'n_met': sum(1 for x in j['items'] if x['met'] and x['is_positive']),

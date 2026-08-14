@@ -28,7 +28,7 @@ import json, os, sys
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage, dimensions
+from lib import stage, dimensions, rubric
 
 WORKERS = int(os.environ.get('RP_WORKERS', 14))
 THINK = stage.envflag('RP_THINK', True)
@@ -340,10 +340,10 @@ def main():
                 n_new += len(new) - 1
             else:
                 out.append(c)
-        pos = [c for c in out if c['is_positive']]
+        pos = rubric.positives(out)
         res.append({**r, 'rubrics': out, 'core_n': len(out),
                     'core_n_positive': len(pos),
-                    's_max': sum(c['score'] for c in pos)})
+                    's_max': rubric.s_max(out)})
     stage.write_jsonl('s04Lb_split.jsonl', res)
 
     n_before = sum(len(r.get('rubrics') or []) for r in recs)

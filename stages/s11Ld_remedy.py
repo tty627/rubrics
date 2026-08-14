@@ -23,7 +23,7 @@ import json, os, re, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage, dimensions
+from lib import stage, dimensions, rubric
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
 THINK = stage.envflag('RP_THINK', True)
@@ -172,8 +172,8 @@ def apply(r, obj, action):
     if not new:
         return None, '模型未返回任何准则'
 
-    pos_orig = [c for c in orig if c.get('is_positive')]
-    s_max = sum(c['score'] for c in pos_orig)
+    pos_orig = rubric.positives(orig)
+    s_max = rubric.s_max(orig)
     n_cap = len(orig) + (1 if action == 'hackable' else 0)
     new = new[:n_cap]
 
@@ -293,12 +293,10 @@ def main():
                'rid': r['rid'],
                'reasons': (info or {}).get('reasons', []) if isinstance(info, dict) else [],
                'criteria_before': len(r.get('rubrics') or []),
-               's_max_before': sum(c['score'] for c in (r.get('rubrics') or [])
-                                   if c.get('is_positive'))}
+               's_max_before': rubric.s_max(r.get('rubrics') or [])}
         if rid_out := new_rubrics.get(r['rid']):
             rec.update({'rewritten': True, 'criteria_after': len(rid_out),
-                        's_max_after': sum(c['score'] for c in rid_out
-                                           if c.get('is_positive')),
+                        's_max_after': rubric.s_max(rid_out),
                         'note': ''})
             res.append({**r, 'rubrics': rid_out, 's11Ld': rec})
             n_ok += 1
