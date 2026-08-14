@@ -40,6 +40,11 @@ RIFT 八失效模式里唯一需要回复池的两个，所以单独一步，跑
      （实测 q0301 对抗档正确推导+空集结论，过程准则翻转造成假 Hackable）；
      gated 弱档追平强档 = 疑似把答案答对（canon 缺失拦不住），弱档对 gap
      度量作废并降级待复核；无有效弱档时 LowSignal 抑制（测量受限非 rubric 缺陷）。
+  F. （2026-08-14 深夜）veto 隔离：s12L 的 veto 会把最终 rate 打到 0，
+     若直接喂给 gap / std / floor 三条判据，强档一旦 veto，strong_rate=0
+     立即触发 FLOOR_RATE 地板判定、LowSignal 成片假阳性。区分度诊断一律
+     改用 raw_rate（不含 veto 的补偿式得分率），veto 命中单独统计
+     （consequential.vetoed），不参与任何区分度判据。
 """
 import json, os, statistics, sys
 from collections import Counter, defaultdict
@@ -92,8 +97,13 @@ def diagnose(r):
     for t in excluded:
         j.pop(t, None)
 
-    rate = {t: v['rate'] for t, v in j.items()}
+    # 修复 F：区分度诊断一律用 raw_rate（不含 veto 的补偿式得分率）。
+    # veto 命中的档 rate=0，是聚合规则不是 rubric 质量信号，
+    # 混进 gap/std/floor 会制造成片假阳性。veto 单独统计。
+    rate = {t: v.get('raw_rate', v.get('rate')) for t, v in j.items()}
     strong = rate['strong']
+    veto_tiers = [t for t, v in j.items() if v.get('vetoed')]
+    veto_by = {t: v.get('veto_by', []) for t, v in j.items() if v.get('vetoed')}
     is_gated = r.get('rubric_form') == 'gated_answer'
     # gated 题弱档追平强档 = 弱档疑似把答案答对了（canon 缺失时程序化核验拦不住）。
     # 这是 pool 造法问题，不是 rubric 缺陷 —— gap 度量随之失效，弱档作废。
@@ -210,8 +220,9 @@ def diagnose(r):
             'surface_criteria': surface,
             'inconsistent_across_weak': inconsistent,
             'suppressed_by_floor': floor}
+    vetoed = {'n_tiers': len(veto_tiers), 'tiers': veto_tiers, 'by': veto_by}
     return {'low_signal': low, 'hackable': hack, 'calibration': calib,
-            'skip_reason': '',
+            'vetoed': vetoed, 'skip_reason': '',
             'excluded_tiers': {t: why for t, why in sorted(excluded.items())}}
 
 
@@ -294,6 +305,9 @@ def main():
             marks.append('Hackable')
         if ha.get('suspect_ties'):
             marks.append(f'待复核×{len(ha["suspect_ties"])}')
+        if (c.get('vetoed') or {}).get('n_tiers'):
+            marks.append('VETO×{}({})'.format(c['vetoed']['n_tiers'],
+                                              '/'.join(c['vetoed']['tiers'])))
         weak_mean = f'{lo["weak_mean"]:.1%}' if lo['weak_mean'] is not None else '—'
         gap = f'{lo["gap"]:.1%}' if lo['gap'] is not None else '—'
         print(f'    {r["rid"]}  {r.get("rubric_form",""):<13}'

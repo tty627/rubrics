@@ -16,14 +16,22 @@
 一次调用判完一条回复的所有准则，而不是每条准则单独调 —— 后者会让判分器
 失去「这份回复整体什么样」的上下文，对完整性类准则尤其不公。
 
-输入: s10L_pool.jsonl（含 rubrics + pool）
+**veto 一票否决聚合**（2026-08-14，s04Lc 打标）：
+  rubric 负项可能带 is_veto（原则性错误）。veto 项被判 met → 该档整题得分率
+  rate 归 0（不进补偿式求和，lib/rubric.VETO_RULE），同时保留 raw_rate
+  （不含 veto 的补偿式得分率，s11Lc 区分度诊断与审计都只能用它，否则
+  veto 归零会污染 gap/std/floor 三条判据）。证据纪律同正向项：veto 判 true
+  必须给原文证据句。两票制：veto 命中时用第二个异源模型复判，两票才生效；
+  复判模型的 family 必须既不同于生成器、也不同于第一判分器（硬约束第 2 条）。
+
+输入: s10L_pool.jsonl（含 rubrics + pool，负项可带 severity/is_veto）
 输出: s12L_judged.jsonl，每题每条回复一份判分结果
 """
 import json, os, re, sys
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage, rubric
+from lib import stage, rubric, config
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
 THINK = stage.envflag('RP_THINK', True)
@@ -70,6 +78,62 @@ from lib import answer_check
 check_program = answer_check.check_program
 
 
+def pick_veto_reviewer(m_gen, m_judge):
+    """两票制的第二票：family 必须异于生成器与第一判分器（硬约束第 2 条）。
+
+    优先用 RP_M_VETO 指定模型名；未指定时取配置里第一个 family 不冲突的模型。
+    """
+    name = os.environ.get('RP_M_VETO')
+    if name:
+        m = config.get(name)
+    else:
+        m = next((x for x in config.load().values()
+                  if x.family not in (m_gen.family, m_judge.family)), None)
+    if m is None:
+        sys.exit('✗ 找不到 veto 复判模型：需要 family 异于生成器 '
+                 f'({m_gen.family}) 与第一判分器 ({m_judge.family})，'
+                 '请用 RP_M_VETO 指定模型名')
+    if m.family in (m_gen.family, m_judge.family):
+        sys.exit(f'✗ veto 复判模型 {m.name} family={m.family} 与生成器/判分器同源，'
+                 '违反两票制异源要求')
+    return m
+
+
+VETO_REVIEW_SYS = '''你是独立复核评分员。第一评分员判定下面的回答**触犯**了一条
+「一票否决」级原则性错误。请独立复核：这条错误是否**确实出现在**这份回答里？
+
+【判定】
+- 确实出现（措辞可以不同，实质相同）→ met = true，并**从回答原文摘一句证据**
+  （evidence，原文照抄，不要改写）
+- 没出现 / 只是疑似 / 证据不实 → met = false，reason 说明
+
+只输出 JSON：
+{"met": true, "evidence": "原文摘句，不超过80字", "reason": ""}'''
+
+
+def review_veto(r, resp, c, reviewer):
+    """对一条判 met 的 veto 准则做第二票复判，返回复核记录。
+
+    复判判 true 同样必须给原文证据句（证据纪律），否则不确认。
+    """
+    q = (r.get('query_eff') or r['question'])[:1200]
+    msgs = [{'role': 'system', 'content': VETO_REVIEW_SYS},
+            {'role': 'user', 'content':
+                f'【题目】\n{q}\n\n'
+                f'【回答】\n{resp["text"][:6000]}\n\n'
+                f'【原则性错误】[{c.get("dimension", "")}] '
+                f'{c.get("criteria", "")}'}]
+    obj, _ = stage.json_call(reviewer, msgs, stage='s12L_veto', thinking=THINK)
+    met = bool(obj.get('met'))
+    ev = str(obj.get('evidence', ''))[:200]
+    rec = {'reviewer': reviewer.name, 'confirmed': met,
+           'evidence': ev, 'reason': str(obj.get('reason', ''))[:120]}
+    if met and not ev.strip():
+        rec['confirmed'] = False
+        rec['reason'] = '复判判 true 但未给证据句，不确认'
+    return rec
+
+
 def build(r, resp, rubrics):
     q = (r.get('query_eff') or r['question'])[:1500]
     lines = []
@@ -94,6 +158,10 @@ def main():
         sys.exit(f'✗ 违反硬约束第 2 条：判分器与生成器同为 {m.family} 系，'
                  f'自偏好偏差会让判分虚高。请用 RP_M_JUDGE 指定异源模型。')
     print(f'  ✓ 硬约束第 2 条：判分器与生成器异源')
+
+    reviewer = pick_veto_reviewer(m_gen, m)
+    print(f'  veto 复判={reviewer.name} (family={reviewer.family})  '
+          f'✓ 两票制异源（≠生成器 {m_gen.family}、≠判分器 {m.family}）')
 
     # 摊平成 (rid, 档位)。准则按 _criterion_id 排序固定顺序，消除位置偏差
     jobs = []
@@ -154,7 +222,7 @@ def main():
 
         missing = sorted(need - set(got))
 
-        items, score = [], 0
+        items, score, veto_hits = [], 0, []
         for i, c in enumerate(rubrics, 1):
             g = got.get(i) or {}
             if i in prog:
@@ -168,23 +236,33 @@ def main():
                 ev = str(g.get('evidence', ''))[:200]
                 why = str(g.get('reason', ''))[:120]
                 byp = False
-                # 纪律 1：正向项判 true 必须有原文证据，没证据不给分
-                if met and c['is_positive'] and not ev.strip():
+                # 纪律 1：正向项判 true 必须有原文证据，没证据不给分。
+                # veto 项判 true 同纪律 —— 一票否决的成立必须落到原文证据句上。
+                if met and (c['is_positive'] or c.get('is_veto')) and not ev.strip():
                     met, why = False, '判 true 但未给证据句，按未满足处理'
             if met:
                 score += c['score']            # 负向项 score 本身是负数
             items.append({'_criterion_id': c.get('_criterion_id'), 'idx': i,
                           'is_positive': c['is_positive'], 'score': c['score'],
                           'dimension': c['dimension'], 'met': met,
+                          'is_veto': bool(c.get('is_veto')),
+                          'severity': c.get('severity'),
                           'evidence': ev, 'reason': why, 'by_program': byp,
                           'judge_missing': i in missing})
-        return rid, tier, items, score, missing
+            if met and c.get('is_veto'):
+                veto_hits.append((items[-1], c))
+
+        # 3) veto 两票制：veto 项被判 met → 第二个异源模型复判，两票才生效
+        veto_review = {it['_criterion_id']: review_veto(r, resp, c, reviewer)
+                       for it, c in veto_hits}
+        return rid, tier, items, score, missing, veto_review
 
     done, errs = stage.run(one, jobs, workers=WORKERS, desc='s12L')
 
     agg = defaultdict(dict)
-    for rid, tier, items, score, missing in done:
-        agg[rid][tier] = {'items': items, 'score': score, 'missing': missing}
+    for rid, tier, items, score, missing, veto_review in done:
+        agg[rid][tier] = {'items': items, 'score': score, 'missing': missing,
+                          'veto_review': veto_review}
 
     # ---- 同源一致性护栏（48 试点审计 q0174/q0242/q0287/q0314/q0440）----
     # trunc/cut 是 strong 的字面子集：同一内容在子集档 met、超集档未 met
@@ -224,14 +302,26 @@ def main():
             j = agg[r['rid']].get(p['tier'])
             if not j:
                 continue
+            raw = sum(x['score'] for x in j['items'] if x['met'])
+            met_by = {x['_criterion_id']: x['met'] for x in j['items']}
+            # 两票确认且（同源一致性修正后仍）met 的 veto 项才生效
+            veto_by = [cid for cid, rv in j.get('veto_review', {}).items()
+                       if rv.get('confirmed') and met_by.get(cid)]
+            vetoed = bool(veto_by)
+            raw_rate = rubric.rate(raw, s_max)
             scored[p['tier']] = {
-                'score': j['score'], 's_max': s_max,
-                'rate': rubric.rate(j['score'], s_max),
+                'score': raw, 's_max': s_max,
+                'raw_rate': raw_rate,
+                'vetoed': vetoed, 'veto_by': veto_by,
+                'veto_review': j.get('veto_review', {}),
+                # 最终得分率：veto 命中 → 0，不进补偿式求和（VETO_RULE）
+                'rate': rubric.apply_veto(raw_rate, vetoed),
                 'judge_incomplete': bool(j.get('missing')),
                 'n_missing': len(j.get('missing') or []),
                 'n_met': sum(1 for x in j['items'] if x['met'] and x['is_positive']),
                 'n_pos': len(pos),
                 'n_penalty': sum(1 for x in j['items'] if x['met'] and not x['is_positive']),
+                'n_veto': sum(1 for x in j['items'] if x.get('is_veto')),
                 'items': j['items']}
         res.append({**r, 's_max': s_max, 'judged': scored})
     stage.write_jsonl(OUT, res)
@@ -257,12 +347,28 @@ def main():
         print(f'  ⚠️  判分器漏返回: {len(inc)} 处（重试后仍缺，非回复问题，'
               f'得分率偏低）: ' + ', '.join(f'{a}/{b}({c})' for a, b, c in inc[:6]))
 
-    print(f'\n  各档得分率（应当单调下降；不降就是 rubric 区分不开）:')
+    n_vetoed = sum(1 for r in res for t in r['judged'].values() if t.get('vetoed'))
+    n_veto_review = sum(len(t.get('veto_review', {}))
+                        for r in res for t in r['judged'].values())
+    n_veto_denied = sum(1 for r in res for t in r['judged'].values()
+                        for rv in t.get('veto_review', {}).values()
+                        if not rv.get('confirmed'))
+    print(f'  🚫 veto: 复判 {n_veto_review} 处（第一票命中即复判），'
+          f'两票确认生效 {n_vetoed} 档，复判否决 {n_veto_denied} 处')
+    for r in res:
+        for t, v in r['judged'].items():
+            if v.get('vetoed'):
+                print(f'    {r["rid"]}/{t}: veto_by={v["veto_by"]}  '
+                      f'raw={v["raw_rate"]:.3f} → rate=0')
+
+    print(f'\n  各档得分率（raw=补偿式；final=veto 归零后。应当单调下降）:')
     for tier in ('strong', 'mid', 'trunc', 'cut', 'weak', 'adv'):
         rs = [r['judged'][tier]['rate'] for r in res if tier in r['judged']]
         if rs:
             rs_s = sorted(rs)
-            print(f'    {tier:<8} mean={sum(rs) / len(rs):6.1%}  '
+            rr = [r['judged'][tier]['raw_rate'] for r in res if tier in r['judged']]
+            print(f'    {tier:<8} final mean={sum(rs) / len(rs):6.1%}  '
+                  f'(raw mean={sum(rr) / len(rr):6.1%})  '
                   f'min={rs_s[0]:6.1%}  max={rs_s[-1]:6.1%}  (n={len(rs)})')
 
     ex = res[0]
