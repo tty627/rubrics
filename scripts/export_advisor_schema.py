@@ -12,22 +12,19 @@
 
 交付 schema（导师给定）:
   criteria     准则文本
-  score        带符号整数分，正负号即加分/扣分（正向 1-3，verifiable 的答案项 6-8；
-               负向 -2/-3）—— 方向只看这里
+  score        原始整数分（正向 1-3，verifiable 的答案项 6-8；负向 -2/-3）
   reason       为什么这条是基本要求
   dimension    通用维度词表中的一项
-  is_positive  0/1 阀门标记（导师 2026-08-14 口径）：true = 这条是 gated_answer 题的
-               答案判据，没拿到则整题不该得分；analytic 题与扣分项全为 false。
-               ⚠️ 与内部档 data/*.jsonl 的 is_positive（=方向）语义不同，
-               本脚本是两种语义的唯一转换点。
+  is_positive  true=该做到的  false=不该出现的
 
-记录级字段除 question/subject/intent/full_mark 外，另带两项（2026-08-13 补）：
+记录级字段除 question/subject/intent/full_mark 外，另带三项（2026-08-13 补）：
   rubric_form  gated_answer / analytic / multi_part —— 判分器据此决定闸门语义
+  is_gate      准则级。标出 gated_answer 题的答案项是哪一条
   blocks       multi_part 题的分块结构，44 条 hybrid 此前被拍平成单一清单
 
 **关于归一化**：导师 2026-08-13 明确 score 直接当权重用，不在本步归一，
 full_mark = sum(正向 score) 保持原始整数，归一化延后到判分阶段。
-因此阀门只是标记，阀门项仍计入 full_mark 分母（与硬约束第 5 条的差异，
+因此 is_gate 只是标记，闸门项仍计入 full_mark 分母（与硬约束第 5 条的差异，
 是导师指定的口径，判分侧自行处理）。
 
 内部字段（`_` 前缀）只进 --full 档：
@@ -40,9 +37,7 @@ import sys
 from collections import Counter
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 交付的准则级字段。源数据的 is_positive（=方向）不进交付：方向由 score 符号自表，
-# 交付档的 is_positive 由本脚本按阀门语义重新赋值。
-DELIVER_FIELDS = ('criteria', 'score', 'reason', 'dimension')
+DELIVER_FIELDS = ('criteria', 'score', 'reason', 'dimension', 'is_positive')
 # 内部档额外带的准则级字段
 INTERNAL_FIELDS = ('_criterion_id', '_dim_from_table', '_perspective_ids',
                    '_scenario_ids', '_flag_vague', '_flag_no_groundtruth',
@@ -56,7 +51,6 @@ def build_record(r, full=False):
         return None
 
     form = r.get('rubric_form', '')
-    # 源数据（data/*.jsonl）的 is_positive 是方向语义，只在这里用来算正向集合
     pos = [c for c in rubrics if c.get('is_positive')]
     if not pos:
         return None
@@ -66,7 +60,7 @@ def build_record(r, full=False):
     # 把某条支撑项冒充成闸门 —— 宁可不标，让下游看得出这题的闸门丢了。
     # 闸门可能不止一条：s04Lb 会把「全部/每一个都对」式的悬崖项拆成
     # 「规则对不对」+「条目全不全」两条各占一半分值（q0358 的 +8 → +4/+4）。
-    # 拆完就没有唯一最高分了，但这两条合起来仍是这道题的答案判据，都该标阀门。
+    # 拆完就没有唯一最高分了，但这两条合起来仍是这道题的答案判据，都该标 is_gate。
     # 判定：分值 >= 满分的 30% 且 >= 4 分。仍要求 4 分下限，避免答案项真被删掉时
     # 把 1 分的支撑项冒充成闸门。
     gate_idx = set()
@@ -84,7 +78,7 @@ def build_record(r, full=False):
     out = []
     for i, c in enumerate(rubrics):
         item = {k: c[k] for k in DELIVER_FIELDS if k in c}
-        item['is_positive'] = (i in gate_idx)   # 阀门语义，非方向
+        item['is_gate'] = (i in gate_idx)
         if full:
             for k in INTERNAL_FIELDS:
                 if k in c:
@@ -131,19 +125,19 @@ def report(recs, src):
         print(f'  准则/题   : min={s[0]} p50={s[len(s) // 2]} max={s[-1]} '
               f'mean={len(allc) / len(recs):.1f}')
 
-    npos = sum(1 for c in allc if c['score'] > 0)
-    print(f'  正向/负向 : {npos} / {len(allc) - npos}  (按 score 符号)')
+    npos = sum(1 for c in allc if c['is_positive'])
+    print(f'  正向/负向 : {npos} / {len(allc) - npos}')
 
     forms = Counter(r['rubric_form'] or '(空)' for r in recs)
     print(f'  rubric_form: ' + '  '.join(f'{k}={v}' for k, v in forms.most_common()))
     print(f'  带 blocks : {sum(1 for r in recs if r.get("blocks"))} 题')
     n_gate_form = sum(1 for r in recs if r['rubric_form'] == 'gated_answer')
-    n_gate_mark = sum(1 for c in allc if c.get('is_positive'))
-    print(f'  阀门标出(is_positive): {n_gate_mark} 条 / gated_answer {n_gate_form} 题')
+    n_gate_mark = sum(1 for c in allc if c.get('is_gate'))
+    print(f'  is_gate 标出: {n_gate_mark} 条 / gated_answer {n_gate_form} 题')
     if n_gate_mark < n_gate_form:
         lost = [r['rid'] for r in recs
                 if r['rubric_form'] == 'gated_answer'
-                and not any(c.get('is_positive') for c in r['rubrics'])]
+                and not any(c.get('is_gate') for c in r['rubrics'])]
         print(f'    ⚠️  闸门丢失 {len(lost)} 题（答案项被诊断删除）: {lost[:8]}')
 
     dims = Counter(c['dimension'] for c in allc if 'dimension' in c)
@@ -156,9 +150,9 @@ def report(recs, src):
     for r in recs:
         if r['rubric_form'] != 'gated_answer' or not r['full_mark']:
             continue
-        g = [c['score'] for c in r['rubrics'] if c.get('is_positive')]
+        g = [c['score'] for c in r['rubrics'] if c.get('is_gate')]
         if g:
-            # 拆分后阀门可能是两条，合起来才是答案判据，按和算占比
+            # 拆分后闸门可能是两条，合起来才是答案判据，按和算占比
             shares.append(sum(g) / r['full_mark'] * 100)
     if shares:
         ok = sum(1 for x in shares if 60 <= x <= 80)
