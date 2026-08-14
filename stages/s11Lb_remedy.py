@@ -30,7 +30,7 @@ import json, os, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage
+from lib import stage, rubric
 
 SRC = os.environ.get('RP_S11LB_SRC', 's11L_diagnosed.jsonl')
 MIN_POS = int(os.environ.get('RP_MIN_POS', 3))      # 处置后至少保留几条正向准则
@@ -49,16 +49,14 @@ def gate_cids(r):
 
     可能不止一条：s04Lb 会把「全部/每一个都对」式的悬崖项拆成「规则对不对」+
     「条目全不全」两条各占一半分值，两条合起来才是答案判据，都要受豁免保护。
-    判定与 export_advisor_schema.py 的 is_gate 保持一致：>=4 分且 >=30% 满分。
+    判定口径 = lib/rubric.gate_indices（与 export 的 is_gate、s12L 的答案项
+    程序化核验同一规则）：正向、>=4 分且 >=30% 满分。
     """
     if r.get('rubric_form') != 'gated_answer':
         return set()
-    pos = [c for c in r.get('rubrics') or [] if c.get('is_positive')]
-    s_max = sum(c['score'] for c in pos)
-    if not s_max:
-        return set()
-    return {c.get('_criterion_id') for c in pos
-            if c['score'] >= 4 and c['score'] / s_max >= 0.3} - {None}
+    rubrics = r.get('rubrics') or []
+    idx = rubric.gate_indices(rubrics)
+    return {rubrics[i].get('_criterion_id') for i in idx} - {None}
 
 
 def decide(r):
@@ -128,7 +126,7 @@ def main():
 
         kept = [c for c in rubrics if c.get('_criterion_id') not in drop]
         removed = [c for c in rubrics if c.get('_criterion_id') in drop]
-        kept_pos = [c for c in kept if c['is_positive']]
+        kept_pos = rubric.positives(kept)
 
         # 删完正向不足 → 整题回滚，打 needs_regen
         if removed and len(kept_pos) < MIN_POS:
@@ -174,7 +172,7 @@ def main():
 
         res.append({**r,
                     'rubrics': kept,
-                    's_max': sum(c['score'] for c in kept_pos),
+                    's_max': rubric.s_max(kept),
                     'core_n': len(kept),
                     'core_n_positive': len(kept_pos),
                     'criteria_before_remedy': len(rubrics),

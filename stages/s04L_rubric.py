@@ -23,7 +23,7 @@ import json, os, re, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage, dimensions
+from lib import stage, dimensions, rubric
 
 WORKERS = int(os.environ.get('RP_WORKERS', 14))
 THINK = stage.envflag('RP_THINK', True)
@@ -330,19 +330,17 @@ def parse(r, raw):
         })
 
     # 超预算时按 |score| 降序保留，负向至多留 2 条
-    pos_l = sorted([c for c in out if c['is_positive']],
-                   key=lambda x: -x['score'])
-    neg_l = sorted([c for c in out if not c['is_positive']],
-                   key=lambda x: x['score'])[:2]
+    pos_l = sorted(rubric.positives(out), key=lambda x: -x['score'])
+    neg_l = sorted(rubric.negatives(out), key=lambda x: x['score'])[:2]
     keep_pos = N_MAX - len(neg_l)
     final = pos_l[:keep_pos] + neg_l
 
     # gated_answer 答案项占比校验与自动调整
     if is_gate and final:
-        pos_final = [c for c in final if c['is_positive']]
+        pos_final = rubric.positives(final)
         if pos_final:
             max_score = max(c['score'] for c in pos_final)
-            total = sum(c['score'] for c in pos_final)
+            total = rubric.s_max(pos_final)
             ratio = max_score / total if total > 0 else 0
 
             # 目标区间 60-80%，若偏离则调整
@@ -378,7 +376,7 @@ def parse(r, raw):
                 # 重新构建final（保持顺序）
                 final = [answer_item] + other_items + neg_l
 
-    return flag(final, sum(c['score'] for c in final if c['is_positive']))
+    return flag(final, rubric.s_max(final))
 
 
 def main():
@@ -400,11 +398,11 @@ def main():
     res = []
     for r in recs:
         rub = by_rid.get(r['rid'], [])
-        pos = [c for c in rub if c['is_positive']]
+        pos = rubric.positives(rub)
         res.append({**r, 'rubrics': rub,
                     'core_n': len(rub),
                     'core_n_positive': len(pos),
-                    's_max': sum(c['score'] for c in pos)})
+                    's_max': rubric.s_max(rub)})
     stage.write_jsonl('s04L_rubric.jsonl', res)
 
     allc = [c for r in res for c in r['rubrics']]

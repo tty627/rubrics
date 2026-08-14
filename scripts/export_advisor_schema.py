@@ -37,6 +37,9 @@ import sys
 from collections import Counter
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+from lib import rubric
+
 DELIVER_FIELDS = ('criteria', 'score', 'reason', 'dimension', 'is_positive')
 # 内部档额外带的准则级字段
 INTERNAL_FIELDS = ('_criterion_id', '_dim_from_table', '_perspective_ids',
@@ -51,7 +54,7 @@ def build_record(r, full=False):
         return None
 
     form = r.get('rubric_form', '')
-    pos = [c for c in rubrics if c.get('is_positive')]
+    pos = rubric.positives(rubrics)
     if not pos:
         return None
 
@@ -61,15 +64,11 @@ def build_record(r, full=False):
     # 闸门可能不止一条：s04Lb 会把「全部/每一个都对」式的悬崖项拆成
     # 「规则对不对」+「条目全不全」两条各占一半分值（q0358 的 +8 → +4/+4）。
     # 拆完就没有唯一最高分了，但这两条合起来仍是这道题的答案判据，都该标 is_gate。
-    # 判定：分值 >= 满分的 30% 且 >= 4 分。仍要求 4 分下限，避免答案项真被删掉时
-    # 把 1 分的支撑项冒充成闸门。
+    # 判定口径 = lib/rubric 闸门规则：分值 >= 4 且 >= 满分的 30%（s_max 分母只算
+    # 正向）。4 分下限避免答案项真被删掉时把 1 分的支撑项冒充成闸门。
     gate_idx = set()
     if form == 'gated_answer':
-        s_max = sum(c['score'] for c in pos)
-        for i, c in enumerate(rubrics):
-            if (c.get('is_positive') and c['score'] >= 4
-                    and s_max and c['score'] / s_max >= 0.3):
-                gate_idx.add(i)
+        gate_idx = set(rubric.gate_indices(rubrics))
 
     # cid → 诊断结果，供内部档挂回
     diag = {d['_criterion_id']: d for d in (r.get('diagnoses') or [])
@@ -97,7 +96,7 @@ def build_record(r, full=False):
         'question_type': r.get('question_type', ''),
         'rubric_form': form,
         'intent': r.get('intent', ''),
-        'full_mark': sum(c['score'] for c in pos),
+        'full_mark': rubric.s_max(rubrics),
         'rubrics': out,
     }
     # multi_part 才带 blocks，其余题型这个字段没有意义
@@ -125,7 +124,7 @@ def report(recs, src):
         print(f'  准则/题   : min={s[0]} p50={s[len(s) // 2]} max={s[-1]} '
               f'mean={len(allc) / len(recs):.1f}')
 
-    npos = sum(1 for c in allc if c['is_positive'])
+    npos = sum(1 for c in allc if rubric.is_positive(c))
     print(f'  正向/负向 : {npos} / {len(allc) - npos}')
 
     forms = Counter(r['rubric_form'] or '(空)' for r in recs)

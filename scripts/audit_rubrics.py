@@ -26,6 +26,8 @@ from collections import Counter
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+from lib import rubric
+
 # 复用 s04L 护栏的判定口径
 import importlib.util
 _spec = importlib.util.spec_from_file_location(
@@ -44,8 +46,8 @@ SPECULATIVE = re.compile(r'多半|可能是|大概率|推测|想必|应该是')
 def audit(path):
     recs = [json.loads(l) for l in open(path, encoding='utf-8') if l.strip()]
     allc = [(r, c) for r in recs for c in r.get('rubrics', [])]
-    pos = [(r, c) for r, c in allc if c.get('is_positive')]
-    neg = [(r, c) for r, c in allc if not c.get('is_positive')]
+    pos = [(r, c) for r, c in allc if rubric.is_positive(c)]
+    neg = [(r, c) for r, c in allc if not rubric.is_positive(c)]
     n_q, n_c = len(recs), len(allc)
     m = {'_path': path, '_n_q': n_q, '_n_c': n_c}
 
@@ -71,8 +73,7 @@ def audit(path):
         print(f'  full_mark  {min(fm)}~{max(fm)}  '
               f'(导师口径：原始权重，不归一)')
     bad_fm = sum(1 for r in recs
-                 if r.get('full_mark') != sum(c['score'] for c in r.get('rubrics', [])
-                                              if c.get('is_positive')))
+                 if r.get('full_mark') != rubric.s_max(r.get('rubrics', [])))
     m['full_mark 与正项和不符'] = bad_fm
 
     # ---- schema 完整性 ----

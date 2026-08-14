@@ -11,6 +11,7 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+from lib import rubric
 from collections import Counter
 
 
@@ -30,13 +31,13 @@ def check_issues(jsonl_path):
         rid = r['rid']
         qtype = r.get('question_type', 'open')
         rubrics = r.get('rubrics', [])
-        pos = [c for c in rubrics if c['is_positive']]
-        neg = [c for c in rubrics if not c['is_positive']]
+        pos = rubric.positives(rubrics)
+        neg = rubric.negatives(rubrics)
 
         # 检查1: verifiable 答案项占比
         if qtype == 'verifiable' and pos:
             max_score = max(c['score'] for c in pos)
-            total = sum(c['score'] for c in pos)
+            total = rubric.s_max(pos)
             ratio = max_score / total * 100 if total > 0 else 0
             if ratio < 60:
                 issues['答案项占比<60%'].append((rid, f'{ratio:.0f}%', max_score, total))
