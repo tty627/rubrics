@@ -30,8 +30,9 @@ def check_issues(jsonl_path):
         rid = r['rid']
         qtype = r.get('question_type', 'open')
         rubrics = r.get('rubrics', [])
-        pos = [c for c in rubrics if c['is_positive']]
-        neg = [c for c in rubrics if not c['is_positive']]
+        # 交付档口径（2026-08-14）：方向看 score 符号，is_positive 是阀门标记
+        pos = [c for c in rubrics if c['score'] > 0]
+        neg = [c for c in rubrics if c['score'] < 0]
 
         # 检查1: verifiable 答案项占比
         if qtype == 'verifiable' and pos:

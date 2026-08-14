@@ -169,8 +169,11 @@ python3 tools/watch.py --tokens # 展开 token 明细
 5. ~~**闸门项不进 S_max 分母**(步骤 9)~~ —— **导师 2026-08-13 推翻**：
    score 直接当权重用，不在流水线内归一，归一化延后到判分阶段。
    因此 `full_mark = sum(正向 score)` 保持原始整数，闸门项计入分母；
-   交付档用准则级 `is_gate` 标出闸门是哪一条，判分侧自行处理 0/1 语义。
-   `legacy/full_path/s09_normalize.py` 随之作废。
+   判分侧自行处理闸门的 0/1 语义。`legacy/full_path/s09_normalize.py` 随之作废。
+   **导师 2026-08-14 明确交付 schema 口径**：`score` 的正负号即加分/扣分（方向），
+   `is_positive` 是 0/1 阀门标记（原 `is_gate` 语义，该字段已删）。
+   ⚠️ 字段语义分叉：内部 `data/*.jsonl` 的 `is_positive` 仍是方向（改它要重跑生成），
+   `outputs/` 两份导出档的 `is_positive` 是阀门；唯一转换点在 `export_advisor_schema.py`。
 
 ## Implementation Status
 
