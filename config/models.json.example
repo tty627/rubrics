@@ -1,8 +1,5 @@
 [
   {
-    "_comment": "2026-08-17 验证过的内网配置（H 集群/开发机直接可用）。踩坑记录：1) generator 角色里别放 judge——judge family 必须不等于任一 generator family（硬约束）；2) 同 family 多端点会按 pool_group 合并成 Pool，config.get('glm-ac') 会失败，单端点不要 pool_group；3) glm-ad 端点当前 404 不可用，已从模板移除；4) veto 第二票需要生成器与判分器之外的第三个 family，这里用 qwen-utility。外网端点（opentech / by 中转 / 自建网关）在 H 集群不可达或凭证已失效，勿加入本配置。"
-  },
-  {
     "name": "glm-ac",
     "model_id": "GLM-5.2-FP8-ac",
     "base_url": "http://s-20260716110819-fqdcz.ailab-opencompass.pjh-service.org.cn/v1",
@@ -18,7 +15,8 @@
       "chat_template_kwargs": {
         "enable_thinking": false
       }
-    }
+    },
+    "_comment": "2026-08-17 验证过的内网配置（H 集群/开发机直接可用）。踩坑：generator 角色里别放 judge（judge family 必须不等于任一 generator family）；同 family 多端点会按 pool_group 合并成 Pool 导致 config.get 找不到单名，单端点不要 pool_group。"
   },
   {
     "name": "deepseek",
@@ -32,7 +30,7 @@
       "diagnoser",
       "grounder"
     ],
-    "_comment": "judge family=deepseek 不等于 generator family=glm；grounder 角色供 s05 锚定用"
+    "_comment": "judge family=deepseek 不等于 generator family=glm；grounder 角色供 s05 锚定用。glm-ad 端点 404 已移除"
   },
   {
     "name": "qwen-utility",
@@ -42,6 +40,6 @@
     "family": "qwen",
     "timeout": 180,
     "roles": [],
-    "_comment": "veto 第二票自动挑选 family 不等于 generator/judge 的模型（qwen 不等于 glm/deepseek）"
+    "_comment": "veto 第二票自动挑选 family 不等于 generator/judge 的模型（qwen 不等于 glm/deepseek）。外网端点（opentech/by 中转）在 H 集群不可达或凭证失效，勿加入"
   }
 ]
