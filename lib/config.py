@@ -89,9 +89,9 @@ def inspect(ms):
     hard, soft = [], []
 
     if len(gen) < 2:
-        hard.append(f'步骤 6 需 ≥2 个 generator，当前 {len(gen)} 个')
+        soft.append(f'步骤 6 聚合线需 ≥2 个 generator，当前 {len(gen)} 个（lean 主线未做聚合，仅告警）')
     elif len(gf) < 2:
-        hard.append(f'步骤 6 需 generator 的 family 互异，当前只有 {sorted(gf)}')
+        soft.append(f'步骤 6 聚合线需 generator 的 family 互异，当前只有 {sorted(gf)}（lean 主线未做聚合，仅告警）')
 
     for j in [m for m in ms.values() if 'judge' in m.roles]:
         if j.family in gf:
