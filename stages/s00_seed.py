@@ -79,15 +79,20 @@ def baseline(recs):
 
     fm = sorted(fullmarks)
     total = sum(dims.values())
+    # 草稿 rubric 允许整批缺失（新数据集可能没有草稿，检查点 2 的对照另行补）
+    crit_stat = ({'min': min(ncrit), 'max': max(ncrit),
+                  'mean': round(sum(ncrit) / len(ncrit), 2)} if ncrit
+                 else {'min': 0, 'max': 0, 'mean': 0.0})
+    fm_stat = ({'min': fm[0], 'p50': fm[len(fm) // 2], 'max': fm[-1]} if fm
+               else {'min': 0, 'p50': 0, 'max': 0})
     rep = {
         'n_records': len(recs),
         'question_type': dict(qtype),
         'n_criteria_total': total,
-        'n_criteria_per_q': {'min': min(ncrit), 'max': max(ncrit),
-                             'mean': round(sum(ncrit) / len(ncrit), 2)},
+        'n_criteria_per_q': crit_stat,
         'dimension_uniq': len(dims),
         'dimension_dist': dict(dims.most_common()),
-        'fullmark': {'min': fm[0], 'p50': fm[len(fm) // 2], 'max': fm[-1]},
+        'fullmark': fm_stat,
         'neg_item_count_dist': dict(sorted(negcnt.items())),
         'ref_response_count_dist': dict(sorted(nref.items())),
     }

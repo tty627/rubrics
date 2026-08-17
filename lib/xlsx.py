@@ -38,8 +38,13 @@ def read(path, sheet='xl/worksheets/sheet1.xml'):
     return rows
 
 
+_XML_BAD = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]')
+
+
 def _esc(s):
-    return html.escape(str(s), quote=False)
+    """转义并剥离 XML 1.0 不允许的控制字符（线上日志文本里常见 \x0b 等）。"""
+    s = _XML_BAD.sub('', str(s))
+    return html.escape(s, quote=False)
 
 
 def _colname(i):

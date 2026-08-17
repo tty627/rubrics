@@ -23,6 +23,15 @@ cp config/models.json.example config/models.json   # 填入实际 base_url / api
 
 把题目表放到 `data/input.xlsx`（列：A=need_rewrite, B=rewritten, C=gen_rubric, D=question, E=dimension, F=draft_rubric, G=ref_response）。
 
+如果数据是 OpenCompass 线上日志格式（`generation_ol_*.jsonl`，多轮 messages + label 标注），用转换脚本：
+
+```bash
+python3 scripts/convert_ol_logs.py --src <日志.jsonl> --out-dir <输出目录>
+# 产出 input.xlsx + seed.jsonl（两者 s00_seed 往返一致）+ labels.jsonl（人工标注 sidecar）+ report.json
+```
+
+映射规则：question ← 第一条 user 消息；ref_responses ← assistant 消息（取 2 条最长的，双回复才能进 Phase 4）；subject ← label.domain；draft_rubric 留空（原数据无草稿，检查点 2 的对照需另行补）。
+
 ### 4. 一键跑全流程
 
 ```bash
