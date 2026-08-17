@@ -46,6 +46,7 @@ RP_CLEAN=1 bash scripts/rerun_all.sh # 同时清结构线缓存（全部 LLM 调
 | 角色 | 环境变量 | 默认 |
 |------|---------|------|
 | 生成（s01-s04） | `RP_M_GEN` / `RP_M_FILTER` / `RP_M_ROUTE` | glm-ac |
+| 锚定 grounding（s05） | `RP_M_GROUND` | deepseek（原全量口径 by-ground） |
 | 负项分级 | `RP_M_S04LC` | cn-judge |
 | 判分 / 草稿判分 | `RP_M_JUDGE` | cn-judge |
 | veto 复判（第二票） | `RP_M_VETO` | cn-veto |
@@ -106,7 +107,8 @@ data/input.xlsx
   ↓ s02_context     intent + scenarios
   ↓ s02b_route      题型路由（步骤 2.5）→ question_type + rubric_form + blocks
   ↓ s03_perspective RET 视角展开（RP_RET=lean）
-  ↓ s04_rubric      准则直出（含血缘 + 质量标记）
+  ↓ s05_ground      锚定 grounding：抽 anchors / answer_canonical / anchor_key
+  ↓ s04_rubric      准则直出（读 s05_grounded，带锚生成；含血缘 + 质量标记）
   ↓ s11_diagnose    RIFT 四失效模式诊断
   ↓ s11b_remedy     诊断后分级处置
   ↓ s04b_split      拆非原子 + 事实纠错 + 标记重写
@@ -142,7 +144,7 @@ s04c_severity.jsonl（452）
 | s04_rubric | 准则直出（含血缘 + 质量标记） |
 | s04b_split | 拆非原子 + 事实纠错 |
 | s04c_severity | 负项分级 + veto 标记 |
-| s05_ground | 锚定 grounding（当前主链未启用） |
+| s05_ground | 锚定 grounding（s03 之后、s04 之前，抽锚点与标准答案） |
 | s10_pool | 6 档回复池 |
 | s11_diagnose | RIFT 失效模式诊断 |
 | s11b_remedy | 诊断后分级处置 |
@@ -169,7 +171,7 @@ s04c_severity.jsonl（452）
 | 脚本 | 覆盖范围 | 说明 |
 |------|---------|------|
 | `rerun_all.sh` | 全流程 | **一键入口**：s00 → 交付 + Phase 4 + 检查点 2 + 审计单测 |
-| `rerun_lean_fixed.sh` | s04 → 诊断处置 → 导出 | 结构线一键；前四步（s00-s03）需先跑 |
+| `rerun_lean_fixed.sh` | s05_ground → s04 → 诊断处置 → 导出 | 结构线一键；前四步（s00-s03）需先跑 |
 | `rerun_phase4.sh` | 回复池 → 判分 → 处置闭环 → 交付 | Phase 4 实测全量 |
 | `rerun_checkpoint2.sh` | 草稿判分 + pairwise 对比 | 放行闸门 |
 
