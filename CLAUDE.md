@@ -58,12 +58,22 @@ xlsx (input.xlsx)
   → s02_5_route     → s02_5_route.jsonl          (question_type + rubric_form + blocks)
   → s03_perspective → s03_perspective_lean.jsonl (RP_RET=lean)
   → s04L_rubric     → s04L_rubric.jsonl          (准则直出，含血缘 + 质量标记)
-  → s11L_diagnose   → s11L_diagnosed.jsonl       (RIFT 三失效模式)
+  → s11L_diagnose   → s11L_diagnosed.jsonl       (RIFT 四失效模式)
   → s11Lb_remedy    → s11Lb_remedied.jsonl + _defect_queue.jsonl
+  → s04Lb_split     → s04Lb_split.jsonl          (拆非原子 + 事实纠错 + 标记重写)
+  → s04Lc_severity  → s04Lc_severity.jsonl       (负项 severity + is_veto) ← 交付源
   → export_advisor_schema.py
       → outputs/rubrics_advisor_lean.jsonl  交付档
       → outputs/rubrics_internal.jsonl      内部档（血缘/诊断/标记）
+  → fill_xlsx_preserve_format.py
+      → outputs/excel/*.xlsx                交付档同源，C 列人读版
 ```
+
+**导出源必须是流水线末端**（当前 `s04Lc_severity.jsonl`）。指向中间步会
+静默丢掉后续产出 —— 已经踩过两次（RIFT 诊断未生效、severity/veto 全空）。
+`export_advisor_schema.py --src` 默认值、`rerun_lean_fixed.sh`、
+`fill_xlsx_preserve_format.py` 的默认源都已对齐；`audit_rubrics.py` 把
+「负项缺 severity」计入指标，换错源审计里会亮。
 
 一键重跑：`bash scripts/rerun_lean_fixed.sh`（清缓存加 `RP_CLEAN=1`）。
 
@@ -158,7 +168,7 @@ python3 tools/watch.py --tokens # 展开 token 明细
 
 ## Critical Constraints
 
-以下五条违反即出错(详见 `docs/design/rubric_pipeline_full_v2.md` §3.3)：
+以下各条违反即出错(前五条详见 `docs/design/rubric_pipeline_full_v2.md` §3.3)：
 
 1. **锚定回复 ≠ 待评回复**(步骤 5): 锚和待评同源会导致 rubric 从待评回复自身衍生
 2. **判分器 ≠ 生成器**(步骤 12): 同系列模型有自偏好偏差，判分虚高
@@ -173,23 +183,32 @@ python3 tools/watch.py --tokens # 展开 token 明细
    `legacy/full_path/s09_normalize.py` 随之作废。
    **字段语义（导师 2026-08-14 复核后确认）**：`is_positive` 是正向/负向（方向），
    `is_gate` 是 0/1 阀门标记。内部 `data/*.jsonl` 与 `outputs/` 导出档口径一致，
-   不存在语义分叉。
+   不存在语义分叉。语义的唯一实现在 `lib/rubric.py`，业务代码不许内联公式。
+6. **veto 是负项专属**（步骤 4Lc → 12）：`is_veto` 只能标在负向准则上
+   （`lib/rubric.is_veto()` 强制这一条），与 `is_gate`（正向答案阀门）方向相反。
+   聚合规则显式声明在 `lib/rubric.VETO_RULE`，交付档 / xlsx / 判分侧引用同一句：
+   任一 `is_veto` 项成立 → 整题得分率 0，不进补偿式求和。
+   veto 项本身不进 `full_mark` 分母。
+   **诊断侧一律用 `raw_rate`**（不含 veto 的补偿式得分率）：veto 归零是聚合规则
+   不是 rubric 质量信号，混进 gap/std/floor 会让强档一 veto 就成片假阳性。
 
 ## Implementation Status
 
 lean 主线已跑通 452 条全量（2026-08-13）：
-- ✅ Phase 0 数据层(s00_seed.py) + 基础库(xlsx.py, llm.py, dimensions.py)
+- ✅ Phase 0 数据层(s00_seed.py) + 基础库(xlsx.py, llm.py, dimensions.py, rubric.py)
 - ✅ Phase 1 试跑(20 条)：验证 RET 能导出多样视角
 - ✅ Phase 2 结构全量
 - ✅ 步骤 4L 准则直出(s04L_rubric.py)：全题预算制，5.4 条/题
 - ✅ 步骤 11L RIFT 免池诊断 + 11Lb 分级处置
-- ✅ 交付导出(export_advisor_schema.py)：交付档 + 内部档双出
+- ✅ 步骤 4Lb 拆分/重写 + 4Lc 负项分级与 veto 标记：452 题 3226 条，
+     负项 614 条全带 severity，195 条 veto 覆盖 166 题（36.7%）
+- ✅ 交付导出(export_advisor_schema.py)：交付档 + 内部档双出，
+     负项带 severity/is_veto；xlsx 与交付档同源
 
 归档但未废：`legacy/phase3/` 多模型聚合、`legacy/phase4/` grounding + 锚点集。
 
 待实现：
-- Phase 4 回复池 + 判分(约 +10k-15k 次)：步骤 10、12、13、14
-- 步骤 4Lb 非原子准则拆分(`stages/s04Lb_split.py`)，消费 `data/_defect_queue.jsonl`
+- Phase 4 放量 452（48 题试点已闭环，见下）：步骤 10、12、13、14，约 +10k-15k 次
 
 **2026-08-13 修复批次**（起因见下方「交付审查」）：
 
@@ -259,6 +278,25 @@ sample48 → s10L_pool48 → s12L_judged48 → s11Lc_cons48 → s11Ld_remedied48
 终态：Hackable=0、LowSignal=3（q0058/q0433 open 弱档不弱 + q0113 判分
 方差边缘）、floor=0、跳过=1、待复核 4 处（gated 弱档疑似答对）。**测量
 工具闭环：缺陷可处置、处置可复测、假信号被源头拦截，Phase 4 可放量 452。**
+
+**2026-08-17 交付导出补 veto 链路**（判分侧要执行合取门，交付档得先带上字段）：
+1. `DELIVER_FIELDS` 加 `severity` / `is_veto`（走 `NEGATIVE_FIELDS`，只挂负项；
+   `is_veto` 经 `lib/rubric.is_veto()` 过一遍，正向项标了也不认）。此前两个字段
+   被白名单过滤，交付档里 severity 全 None、veto 0 条。
+2. `--src` 默认值 `s11Lb_remedied` → `s04Lc_severity`（流水线末端）；
+   `rerun_lean_fixed.sh` 补第 6 步 s04Lc、导出改 7/7。
+3. **白名单改规则**：内部档改带全部 `_` 前缀字段。白名单漏字段是静默的，
+   已漏过两批（第一批两个 `_flag_*`，第二批 s04Lb 的 `_rewritten_from` /
+   `_pending_split` / `_split_skipped` / `_factfix*` / `_needs_review` 加 s04Lc 的
+   `_veto_block` / `_s04Lc_*`）。交付侧仍是严格白名单，所以放宽内部侧不影响口径。
+4. `fill_xlsx_preserve_format.py` 默认源 `data/s04b_core.jsonl`（legacy 全量线，
+   既没过 RIFT 也没有 is_gate/severity）→ 交付档本身。xlsx 与 jsonl 必须同源。
+   人读版标 ⭐答案判据 / 🚫一票否决 + [严重性]，带 veto 的题末尾附 `VETO_RULE` 原文。
+5. `audit_rubrics.py` 加四项：`severity` 覆盖度、veto 条数（`~` 前缀=中性覆盖度，
+   对比区不判好坏）、veto 门槛三复核（非原子 / 主观阈值 / 非 principle）。
+
+复核：交付档 452 题 3226 条，除新增两字段外与上一版逐字节相同；负项 614/614
+带分级，195 条 veto 全 principle 级、门槛三项全 0；xlsx 只有 C 列变动（452 行）。
 
 **交付审查发现**（`outputs/rubrics_advisor_lean.jsonl` 全量统计，2026-08-13）：
 - 35 条准则引用「标准答案」但交付档里没有标准答案 → 判分器无法独立执行

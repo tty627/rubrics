@@ -85,6 +85,19 @@ def audit(path):
     n_gform = sum(1 for r in recs if r.get('rubric_form') == 'gated_answer')
     print(f'  is_gate      {n_gate} 条 / gated_answer {n_gform} 题')
     m['闸门丢失'] = max(0, n_gform - n_gate)
+    # 负项分级 + veto（s04Lc 起进交付档）。缺了判分侧执行不了合取门，
+    # 而缺失是静默的 —— 导出源指向 s04Lc 之前的步骤就会全空，所以计入指标对账。
+    n_sev = sum(1 for _, c in neg if c.get('severity'))
+    sev = Counter(c.get('severity') for _, c in neg if c.get('severity'))
+    print(f'  severity     {n_sev}/{len(neg)} 条负项  ' +
+          '  '.join(f'{k}={sev[k]}' for k in rubric.SEVERITY_LEVELS if sev[k]))
+    n_veto = sum(1 for _, c in allc if c.get('is_veto'))
+    q_veto = len({r['rid'] for r, c in allc if c.get('is_veto')})
+    print(f'  is_veto      {n_veto} 条 / 覆盖 {q_veto} 题')
+    m['负项缺 severity'] = len(neg) - n_sev
+    # `~` 前缀 = 中性覆盖度指标，不是缺陷。对比区里"增加"对缺陷是坏事、
+    # 对覆盖度是好事，两者混在一起看会把 veto 铺开误报成回归。
+    m['~veto 条数'] = n_veto
 
     # ---- 可判定性 ----
     print(f'\n【可判定性】判分器能否独立给出一致判定')
@@ -111,6 +124,20 @@ def audit(path):
     hit('疑似非原子',
         [(r, c) for r, c in allc if NONATOMIC_HINT.search(c['criteria'])],
         '启发式，以 RIFT 诊断为准')
+    # veto 项的门槛比普通负项高一档：一票否决整题，判定线必须可一致执行。
+    # s04Lc 有代码兜底，这里独立复核一遍（导出层若换源、门槛若放松，这里会亮）。
+    veto_pairs = [(r, c) for r, c in allc if c.get('is_veto')]
+    hit('veto 项非原子',
+        [(r, c) for r, c in veto_pairs
+         if NONATOMIC_HINT.search(c['criteria']) or '或' in c['criteria']],
+        'veto 必须单一错误，捆多个判不一致')
+    hit('veto 项主观阈值',
+        [(r, c) for r, c in veto_pairs
+         if SUBJ_DEG.search(c['criteria']) and not ANCHOR.search(c['criteria'])],
+        'veto 门槛第 3 条：无判定线不能当 0/1 门')
+    hit('veto 项非 principle 级',
+        [(r, c) for r, c in veto_pairs if c.get('severity') != 'principle'],
+        'veto 门槛第 2 条：只有原则性错误能否决')
 
     # ---- 区分度 ----
     print(f'\n【区分度】能否把好回答和差回答分开')
@@ -187,7 +214,10 @@ def main():
             if o == n == 0:
                 continue
             d = n - o
-            arrow = '✅' if d < 0 else ('⚠️ ' if d > 0 else '  ')
+            if k.startswith('~'):      # 中性覆盖度：只报变化，不判好坏
+                arrow = '  '
+            else:
+                arrow = '✅' if d < 0 else ('⚠️ ' if d > 0 else '  ')
             print(f'  {arrow} {k:<{w}}  {o:5d} → {n:5d}  ({d:+d})')
         print(f'\n  准则总数  {old["_n_c"]} → {new["_n_c"]}   '
               f'题目数 {old["_n_q"]} → {new["_n_q"]}')

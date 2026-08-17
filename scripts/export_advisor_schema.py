@@ -2,12 +2,12 @@
 """导出导师指定 schema 的 rubrics。
 
 用法：
-  python3 scripts/export_advisor_schema.py                        # 默认源 = s11Lb_remedied
+  python3 scripts/export_advisor_schema.py                        # 默认源 = s04Lc_severity
   python3 scripts/export_advisor_schema.py --src data/s04L_rubric.jsonl
   python3 scripts/export_advisor_schema.py --full                 # 另出一份带血缘的内部档
 
 产出：
-  outputs/rubrics_advisor_lean.jsonl        交付档，rubrics 只含 5 个交付字段
+  outputs/rubrics_advisor_lean.jsonl        交付档，rubrics 只含交付字段
   outputs/rubrics_internal.jsonl  (--full)  内部档，带血缘 + 诊断 + 质量标记
 
 交付 schema（导师给定）:
@@ -22,10 +22,18 @@
   is_gate      准则级。标出 gated_answer 题的答案项是哪一条
   blocks       multi_part 题的分块结构，44 条 hybrid 此前被拍平成单一清单
 
+负项两个字段（2026-08-14 补，源自 s04Lc_severity）：
+  severity     principle / major / minor —— 负向错误的严重性分级
+  is_veto      true = 一票否决项。判分侧的聚合规则见 lib/rubric.VETO_RULE：
+               「任一 is_veto 项被判定成立 → 整题得分率为 0，不进补偿式求和」
+只挂在负向准则上（正向项不带这两个字段）。此前两个字段被 DELIVER_FIELDS
+过滤掉，交付档里 severity 全 None、veto 0 条，判分侧无法执行合取门。
+
 **关于归一化**：导师 2026-08-13 明确 score 直接当权重用，不在本步归一，
 full_mark = sum(正向 score) 保持原始整数，归一化延后到判分阶段。
 因此 is_gate 只是标记，闸门项仍计入 full_mark 分母（与硬约束第 5 条的差异，
-是导师指定的口径，判分侧自行处理）。
+是导师指定的口径，判分侧自行处理）。veto 同理只是标记，负项不进 full_mark 分母，
+是否归零由判分侧按 VETO_RULE 聚合。
 
 内部字段（`_` 前缀）只进 --full 档：
 血缘标签是设计文档硬约束第 4 条，步骤 13 按维度聚合失败原因、步骤 14 回灌都依赖。
@@ -41,13 +49,20 @@ sys.path.insert(0, REPO)
 from lib import rubric
 
 DELIVER_FIELDS = ('criteria', 'score', 'reason', 'dimension', 'is_positive')
-# 内部档额外带的准则级字段。
-# 2026-08-14 修：此前漏了 _flag_subjective_threshold / _flag_topic_list，
-# 两个质量标记被静默丢弃（源数据 1 条 subjective_threshold，内部档 0 条）。
-INTERNAL_FIELDS = ('_criterion_id', '_dim_from_table', '_perspective_ids',
-                   '_scenario_ids', '_flag_vague', '_flag_no_groundtruth',
-                   '_flag_cliff', '_flag_mention_only',
-                   '_flag_subjective_threshold', '_flag_topic_list')
+# 负项专属交付字段（s04Lc 打的标）。只挂负向准则，正向项不带。
+NEGATIVE_FIELDS = ('severity', 'is_veto')
+
+# 内部档带全部 `_` 前缀字段 —— 白名单改成规则（2026-08-14 二次修）。
+# 白名单漏字段是**静默的**：上游打了标，导出层不认识就直接丢，审计看不出来。
+# 已经漏过两批 —— _flag_subjective_threshold / _flag_topic_list（第一次），
+# s04Lb 的 _rewritten_from / _pending_split / _split_skipped / _factfix* /
+# _needs_review 与 s04Lc 的 _veto_block / _s04Lc_*（第二次）。
+# 内部档的定位就是"上游所有标记的全集"，用规则表达这件事，新增标记自动带上。
+# 交付档反过来仍是严格白名单（DELIVER_FIELDS + NEGATIVE_FIELDS + is_gate），
+# 内部字段绝不会漏进交付档，所以放宽这一侧不影响交付口径。
+def internal_fields(c):
+    """内部档要额外带的准则级字段 = 所有 `_` 前缀字段。"""
+    return [k for k in c if k.startswith('_')]
 
 
 def build_record(r, full=False):
@@ -81,10 +96,16 @@ def build_record(r, full=False):
     for i, c in enumerate(rubrics):
         item = {k: c[k] for k in DELIVER_FIELDS if k in c}
         item['is_gate'] = (i in gate_idx)
-        if full:
-            for k in INTERNAL_FIELDS:
+        # severity / is_veto 只对负向项有意义（正向项挂上去会让判分侧误以为
+        # 正向准则也能一票否决）。is_veto 走 lib/rubric 口径：标在正向上不算。
+        if not rubric.is_positive(c):
+            for k in NEGATIVE_FIELDS:
                 if k in c:
                     item[k] = c[k]
+            item['is_veto'] = rubric.is_veto(c)
+        if full:
+            for k in internal_fields(c):
+                item[k] = c[k]
             d = diag.get(c.get('_criterion_id'))
             if d:
                 item['_failure_modes'] = d.get('failure_modes') or []
@@ -111,6 +132,8 @@ def build_record(r, full=False):
         rec['_skip_reason'] = r.get('skip_reason', '')
         rec['_criteria_removed'] = r.get('criteria_removed', 0)
         rec['_needs_regen'] = bool(r.get('needs_regen'))
+        # veto 覆盖情况留在记录级，审计时不用再遍历 rubrics 数组
+        rec['_n_veto'] = len(rubric.veto_items(rubrics))
 
     return rec
 
@@ -128,7 +151,31 @@ def report(recs, src):
               f'mean={len(allc) / len(recs):.1f}')
 
     npos = sum(1 for c in allc if rubric.is_positive(c))
-    print(f'  正向/负向 : {npos} / {len(allc) - npos}')
+    neg = [c for c in allc if not rubric.is_positive(c)]
+    print(f'  正向/负向 : {npos} / {len(neg)}')
+
+    # 负项分级与 veto —— 源里有就必须导出，缺了判分侧执行不了合取门
+    sev = Counter(c.get('severity') for c in neg)
+    n_sev = sum(1 for c in neg if c.get('severity'))
+    print(f'  负项 severity: {n_sev}/{len(neg)} 条带分级  ' +
+          '  '.join(f'{k or "(空)"}={sev[k]}' for k in
+                   list(rubric.SEVERITY_LEVELS) + [None] if sev[k]))
+    vetoes = [c for c in neg if c.get('is_veto')]
+    q_veto = sum(1 for r in recs
+                 if any(c.get('is_veto') for c in r['rubrics']))
+    print(f'  is_veto     : {len(vetoes)} 条 / 覆盖 {q_veto} 题'
+          f'（{q_veto / max(len(recs), 1) * 100:.1f}%）')
+    print(f'    聚合规则  : {rubric.VETO_RULE}')
+    if neg and not n_sev:
+        print('    ⚠️  负项一条分级都没有 —— 源文件应是 s04Lc_severity.jsonl，'
+              '否则判分侧无法执行 veto')
+    bad_veto = [c for c in allc if c.get('is_veto') and rubric.is_positive(c)]
+    if bad_veto:
+        print(f'    ⚠️  {len(bad_veto)} 条正向项带 is_veto（方向错，应只标负项）')
+    bad_sev = [c for c in vetoes if c.get('severity') != 'principle']
+    if bad_sev:
+        print(f'    ⚠️  {len(bad_sev)} 条 veto 不是 principle 级'
+              f'（veto 门槛第 2 条：只有原则性错误能一票否决）')
 
     forms = Counter(r['rubric_form'] or '(空)' for r in recs)
     print(f'  rubric_form: ' + '  '.join(f'{k}={v}' for k, v in forms.most_common()))
@@ -164,8 +211,12 @@ def report(recs, src):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--src', default=os.path.join(REPO, 'data', 's11Lb_remedied.jsonl'),
-                    help='源 jsonl，默认 data/s11Lb_remedied.jsonl（已过 RIFT 诊断处置）')
+    # 默认源 = 流水线末端。链路：s04L → s11L 诊断 → s11Lb 处置 → s04Lb 拆分/重写
+    # → s04Lc 负项分级。默认值指向中间步会静默丢掉后续步骤的产出
+    # （2026-08-13 交付档一条没过 RIFT、2026-08-14 severity/veto 全空，都是这个坑）。
+    ap.add_argument('--src', default=os.path.join(REPO, 'data', 's04Lc_severity.jsonl'),
+                    help='源 jsonl，默认 data/s04Lc_severity.jsonl（流水线末端：'
+                         '已过 RIFT 诊断处置 + 缺陷重写 + 负项分级）')
     ap.add_argument('--out', default=os.path.join(REPO, 'outputs', 'rubrics_advisor_lean.jsonl'))
     ap.add_argument('--full', action='store_true',
                     help='另出一份 outputs/rubrics_internal.jsonl，带血缘/诊断/质量标记')
@@ -174,7 +225,8 @@ def main():
     src = a.src if os.path.isabs(a.src) else os.path.join(REPO, a.src)
     if not os.path.exists(src):
         sys.exit(f'缺少 {src}\n'
-                 f'lean 线请先跑 stages/s04L_rubric.py → s11L_diagnose.py → s11Lb_remedy.py')
+                 f'lean 线请先跑 stages/s04L_rubric.py → s11L_diagnose.py → '
+                 f's11Lb_remedy.py → s04Lb_split.py → s04Lc_severity.py')
 
     with open(src, encoding='utf-8') as f:
         raw = [json.loads(l) for l in f if l.strip()]
@@ -206,19 +258,21 @@ def main():
     if empty:
         print(f'\n  ⚠️  空结果 : {len(empty)} 题 {empty[:8]}')
 
-    # 质量标记汇总（s04L 的 flag() 护栏打的标，只在源里存在时才有）
+    # 上游标记汇总。同样按规则枚举（所有 `_` 前缀 + 值为真的字段），
+    # 不写死名字 —— 写死会让新加的标记在这份对账里看不见（漏过两批）。
+    # 血缘字段每条都有，逐条打印没信息量，排掉。
+    LINEAGE = {'_criterion_id', '_dim_from_table',
+               '_perspective_ids', '_scenario_ids'}
     flags = Counter()
     for r in raw:
         for c in r.get('rubrics') or []:
-            for k in ('_flag_vague', '_flag_no_groundtruth', '_flag_cliff',
-                      '_flag_mention_only', '_flag_subjective_threshold',
-                      '_flag_topic_list'):
-                if c.get(k):
+            for k, v in c.items():
+                if k.startswith('_') and k not in LINEAGE and v:
                     flags[k] += 1
     if flags:
-        print(f'\n  质量标记（待 s04Lb 处理）:')
+        print(f'\n  上游标记（_ 前缀，血缘除外）:')
         for k, n in flags.most_common():
-            print(f'    {k:<24} {n:5d} 条')
+            print(f'    {k:<28} {n:5d} 条')
 
     # 与草稿对比 —— 注意准则数不再是"越多越好"的指标
     base = os.path.join(REPO, 'data', 'baseline.json')
