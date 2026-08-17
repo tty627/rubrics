@@ -62,6 +62,87 @@ make check                                      # 以上两条 + 全仓编译检
 
 每步独立读写 `data/` 下的 jsonl，任一步可单独重跑。LLM 调用按 `model + prompt + params` 哈希缓存到 `cache/<stage>/`，改一个 prompt 只重算受影响的哈希，命中缓存时整段秒级。
 
+## 项目结构
+
+### 目录
+
+```
+rubrics/
+├── stages/         流水线 20 个 stage，每步独立读写 data/*.jsonl，任一步可单独重跑
+├── lib/            基础库 7 个：xlsx / llm / config / stage / dimensions / rubric / answer_check
+├── scripts/        辅助脚本：导出、审计、xlsx 填充、三个一键重跑
+├── tests/          语义核心纯逻辑单测（零 LLM）：test_rubric / test_s04_flags
+├── config/         模型端点配置（models.json 含 api_key，gitignore；example 为模板）
+├── docs/           design/ 流程定稿与实施计划；reports/ 技术报告
+├── legacy/         已归档的旧实现（full_path / phase3 / phase4），保留可运行状态
+├── data/           中间产物与种子（gitignore，随侧车 tar 走）
+├── outputs/        交付档 + 内部档 + 填充后的 xlsx（gitignore）
+├── cache/          LLM 调用缓存，按 stage 分目录（gitignore）
+├── logs/           运行日志（gitignore）
+├── Makefile        常用入口：make check / seed / phase4 / checkpoint2 / export
+└── pyproject.toml  项目元数据（纯标准库，零依赖）
+```
+
+### 流水线
+
+14 步流程（stage 编号 = PLAN.md 的步骤位），实际实现分两条线：
+
+**结构线**（452 题全量，一键：`bash scripts/rerun_lean_fixed.sh`）：
+
+```
+data/input.xlsx
+  ↓ s00_seed        xlsx → seed.jsonl + baseline.json（草稿基线指标）
+  ↓ s01_filter      过滤
+  ↓ s02_context     intent + scenarios
+  ↓ s02b_route      题型路由（步骤 2.5）→ question_type + rubric_form + blocks
+  ↓ s03_perspective RET 视角展开（RP_RET=lean）
+  ↓ s04_rubric      准则直出（含血缘 + 质量标记）
+  ↓ s11_diagnose    RIFT 四失效模式诊断
+  ↓ s11b_remedy     诊断后分级处置
+  ↓ s04b_split      拆非原子 + 事实纠错 + 标记重写
+  ↓ s04c_severity   负项 severity 分级 + veto 标记
+  ↓ export_advisor_schema.py → outputs/rubrics_advisor_lean.jsonl 交付档
+```
+
+**Phase 4 实测线**（388 双回复题，一键：`bash scripts/rerun_phase4.sh`）：
+
+```
+s04c_severity.jsonl（452）
+  ↓ 筛双回复        s04c_phase4.jsonl（单回复题按硬约束 1 排除）
+  ↓ s10_pool        6 档回复池（strong / mid / trunc / cut / weak / adv）
+  ↓ s12_judge       判分（veto 两票制 + 同源一致性修正）
+  ↓ s11c_consequential  区分度诊断（Hackable / LowSignal / floor）
+  ↓ s11d_remedy ⇄ s12_judge 重判 ⇄ s11c_consequential 复诊（×3 轮闭环）
+  ↓ s11e_select     各轮实测证据里挑每题最优
+  ↓ s04c_severity（补分级）→ 合并 64 单回复题 → s11e_all452.jsonl ← 最终交付源
+  ↓ s12b_draft_judge  草稿 rubric 判分（检查点 2，一键：bash scripts/rerun_checkpoint2.sh）
+  ↓ s12c_pairwise     新 vs 草稿 pairwise 放行闸门（检查点 2）
+```
+
+### stage 职责表
+
+| stage | 职责 |
+|---|---|
+| s00_seed | xlsx → 种子集 + 草稿基线 |
+| s00b_sample / s00c_pilot | 抽样 / 试点工具 |
+| s01_filter | 题目过滤 |
+| s02_context | intent + scenarios |
+| s02b_route | 题型路由（步骤 2.5） |
+| s03_perspective | RET 视角展开 |
+| s04_rubric | 准则直出（含血缘 + 质量标记） |
+| s04b_split | 拆非原子 + 事实纠错 |
+| s04c_severity | 负项分级 + veto 标记 |
+| s05_ground | 锚定 grounding（当前主链未启用） |
+| s10_pool | 6 档回复池 |
+| s11_diagnose | RIFT 失效模式诊断 |
+| s11b_remedy | 诊断后分级处置 |
+| s11c_consequential | 区分度诊断 |
+| s11d_remedy | 实测闭环处置 |
+| s11e_select | 终态选择（挑每题最优） |
+| s12_judge | 判分（veto 两票制） |
+| s12b_draft_judge | 草稿 rubric 判分（检查点 2） |
+| s12c_pairwise | 新 vs 草稿 pairwise 闸门（检查点 2） |
+
 ## 输出物
 
 | 文件 | 说明 |
@@ -113,19 +194,6 @@ stage 文件命名 `sNN[a-e]_语义词.py`：`NN` = PLAN.md 14 步计划里的�
 | s05L_ground | s05_ground | s12Lb_draft_judge | s12b_draft_judge |
 | s10L_pool | s10_pool | s12Lc_pairwise | s12c_pairwise |
 | s11L_diagnose | s11_diagnose | s11Lb_remedy | s11b_remedy |
-
-## 仓库布局
-
-```
-stages/      20 个 stage，命名 sNN[a-e]_语义词.py
-lib/         基础库 7 个：xlsx / llm / config / stage / dimensions / rubric / answer_check
-scripts/     辅助脚本：导出、审计、xlsx 填充、三个一键重跑
-tests/       语义核心纯逻辑单测（零 LLM）
-config/      模型端点配置（models.json 含 api_key，已 gitignore）
-docs/        design/ 流程定稿与实施计划；reports/ 技术报告
-legacy/      已归档的旧实现，保留可运行状态
-data/ outputs/ cache/ logs/   运行产物（均 gitignore）
-```
 
 ## 参考论文
 
