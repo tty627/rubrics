@@ -25,9 +25,18 @@ set -e  # 遇错即停
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
-# grounder 无 family 硬约束；原 452 题全量口径是 by-ground(claude-opus-5)，
-# 但开发机 config 常没有 grounder 角色，默认用两机都有的 deepseek，可覆盖。
-: "${RP_M_GROUND:=deepseek}"
+# grounder 无 family 硬约束；解析顺序：RP_M_GROUND 环境变量 > config 里 roles
+# 含 "grounder" 的模型 > 兜底 deepseek（原 452 题全量口径是 by-ground=claude-opus-5，
+# 想在 config 里单独配 ground 模型，就给它加 "grounder" 角色）。
+if [ -z "${RP_M_GROUND:-}" ]; then
+    RP_M_GROUND=$(python3 - <<'PYEOF'
+import json
+cfg = json.load(open('config/models.json', encoding='utf-8'))
+gs = [m['name'] for m in cfg if 'grounder' in (m.get('roles') or [])]
+print(gs[0] if gs else 'deepseek')
+PYEOF
+)
+fi
 export RP_M_GROUND
 
 echo "=== lean 主线重跑 ==="

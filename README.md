@@ -46,7 +46,7 @@ RP_CLEAN=1 bash scripts/rerun_all.sh # 同时清结构线缓存（全部 LLM 调
 | 角色 | 环境变量 | 候选默认 | 回退 |
 |------|---------|---------|------|
 | 生成（s01-s04） | `RP_M_GEN` / `RP_M_FILTER` / `RP_M_ROUTE` | glm-ac | generator 角色第一个 |
-| 锚定 grounding（s05） | `RP_M_GROUND` | deepseek（原全量口径 by-ground） | grounder 角色第一个 |
+| 锚定 grounding（s05） | `RP_M_GROUND` | config 里 roles 含 `grounder` 的模型（没有则 deepseek 兜底） | 原全量口径 by-ground |
 | 负项分级 | `RP_M_S04LC` | cn-judge | judge 角色第一个 |
 | 判分 / 草稿判分 | `RP_M_JUDGE` | cn-judge | judge 角色第一个 |
 | veto 复判（第二票） | `RP_M_VETO` | cn-veto | family ≠ 生成器与判分器的第一个 |
