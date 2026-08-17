@@ -23,7 +23,7 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
-WORKERS = int(os.environ.get('RP_WORKERS', 6))
+WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)
 STRATEGY = os.environ.get('RP_RET', 'hybrid')      # batch | hybrid | faithful | lean
 W1 = int(os.environ.get('RP_W1', 1))               # ℓ=1 水平展开轮数（lean 下恒 0）

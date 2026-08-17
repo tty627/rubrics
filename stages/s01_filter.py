@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
 VERDICTS = ['直通', '改写-截断补全', '改写-指代消解', '改写-拆分', '弃用']
-WORKERS = int(os.environ.get('RP_WORKERS', 8))
+WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', False)          # 分类任务，默认关思维链
 
 SYS = '''你是评测数据的入口质检员。判定一条真人 query 是否需要改写或弃用。

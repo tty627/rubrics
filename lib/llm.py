@@ -261,7 +261,7 @@ def _read_sse(resp):
 
 
 def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
-         retries=4, extra=None, use_cache=True, thinking=None):
+         retries=None, extra=None, use_cache=True, thinking=None):
     """返回 (text, meta)。命中缓存不计费。
 
     max_tokens 缺省用 model.max_tokens。thinking=False 时附加 model.no_think_extra
@@ -271,6 +271,8 @@ def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
     content 是空串。这里视为失败、加倍预算重试，且**绝不把空串写进缓存**——
     否则这条记录会永久命中空缓存，事后无从排查。
     """
+    if retries is None:
+        retries = RETRIES
     extra = dict(extra or {})
     if thinking is False and model.no_think_extra:
         extra.update(model.no_think_extra)
@@ -378,7 +380,7 @@ def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
                  dt=time.time() - t0, att=att, endpoint=ep.name, msg=repr(e)[:200])
             # 预算不足是确定性失败，加完预算立刻重试，退避只对网络类错误有意义
             if att < retries - 1 and _EMPTY_RETRY not in str(e):
-                time.sleep(2 ** att * 1.5)
+                time.sleep(min(2 ** att * 1.5, BACKOFF_CAP))
     raise RuntimeError(f'{model.name} failed after {retries}: {last}')
 
 
