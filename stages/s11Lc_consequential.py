@@ -50,7 +50,7 @@ import json, os, statistics, sys
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage
+from lib import stage, answer_check
 
 SRC = os.environ.get('RP_S11LC_SRC', 's12L_judged.jsonl')
 OUT = os.environ.get('RP_S11LC_OUT', 's11Lc_consequential.jsonl')
@@ -72,6 +72,18 @@ def diagnose(r):
     if r.get('strong_degenerate'):
         return {'low_signal': None, 'hackable': None,
                 'skip_reason': f'strong 档退化：{r.get("strong_degenerate_reason", "")}'}
+    # strong_degenerate 只查篇幅，查不出「答得长但答错了」。388 全量实测：22 道
+    # 地板题里 5 道是 strong 档答案本身错的（q0078/q0199/q0262/q0353/q0378），
+    # 放松准则治不了 —— 参照系坏了就没有区分度可谈，跳过。
+    _st = [p for p in (r.get('pool') or []) if p['tier'] == 'strong']
+    _canon = r.get('answer_canonical')
+    if _st and _canon:
+        _app, _ok = answer_check.check_program(
+            r.get('answer_kind'), _canon, _st[0].get('text') or '')
+        if _app and not _ok:
+            return {'low_signal': None, 'hackable': None,
+                    'skip_reason': f'strong 档答案核验不通过（应为 {_canon[:20]}），'
+                                   f'参照系失效'}
 
     # ---- 构造失效剔除（修复 B）----
     excluded = {}
@@ -94,6 +106,19 @@ def diagnose(r):
     for t in ('trunc', 'cut'):
         if t in j and t not in excluded and ss and mset(t) == ss:
             excluded[t] = '删/截后得分点全保留，造法失效'
+    # mid 档序失效（388 全量实测）：SYS_MID 的「不做深入展开」被 pool_mid 模型
+    # 读成「答简短」，中位 244 字 < weak 的 395 字（两档还是不同模型，篇幅无统一
+    # 约束）→ 65% 的题 mid ≤ weak。档位序坏了，mid 的分不代表「中等质量」，
+    # 只会抬高 std 掩盖 LowSignal、压低 min 掩盖 ceiling。剔除，不参与任何判据。
+    if 'mid' in j and 'mid' not in excluded:
+        mr = j['mid'].get('raw_rate', j['mid'].get('rate'))
+        for lower in ('weak', 'adv'):
+            v = j.get(lower)
+            if v is None or lower in excluded:
+                continue
+            if mr is not None and mr <= v.get('raw_rate', v.get('rate')):
+                excluded['mid'] = f'mid 档不高于 {lower} 档，档位序失效'
+                break
     for t in excluded:
         j.pop(t, None)
 

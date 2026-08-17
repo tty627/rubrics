@@ -24,6 +24,9 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage, dimensions, rubric
+# 锚可达性探针要用 s12L 的判分口径（同一套 SYS + 同一套准则渲染），
+# 换口径测出来的分数与 s11Lc 的地板判定不可比。
+from stages import s12L_judge as s12L
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
 THINK = stage.envflag('RP_THINK', True)
@@ -164,6 +167,93 @@ def build(r, action, info):
     return None
 
 
+def anchor_reachable(m, r):
+    """地板题前置门二：参考回复（锚）能不能在这份 rubric 上拿到分。
+
+    rubric 本来就是从参考回复推出来的。若锚能拿到 ≥30%，说明准则是可满足的，
+    地板信号来自 pool 的 strong 档不如锚 —— 那是 pool 侧问题，放松准则会把
+    本来好用的 rubric 改坏。388 全量实测：8 道复测后仍地板的题里 6 道属此类
+    （锚拿到 50%~100%），只有 q0020/q0279 是连锚都拿不到分的真过严。
+
+    返回 (reachable: bool, best_rate: float|None)。判不出来时按 False 放过
+    （不阻断原有的放松处置）。
+    """
+    refs = r.get('ref_responses') or {}
+    texts = [v for _, v in sorted(refs.items()) if isinstance(v, str) and v.strip()]
+    if not texts:
+        return False, None
+    rubrics = r.get('rubrics') or []
+    best = None
+    for t in texts:
+        obj, _ = stage.json_call(m, judge_msgs(r, t, rubrics),
+                                 stage='s11Ld', thinking=False)
+        got = judge_rate(obj, rubrics)
+        if got is None:
+            continue
+        best = got if best is None else max(best, got)
+    if best is None:
+        return False, None
+    return best >= 0.3, best
+
+
+def judge_msgs(r, text, rubrics):
+    """复用 s12L 的判分口径 —— 换一套标准去测锚，结论就没有可比性。"""
+    return s12L.build(r, {'text': text}, rubrics)
+
+
+def judge_rate(obj, rubrics):
+    """把判分 JSON 折成 raw_rate（补偿式，与 s11Lc 同口径）。"""
+    if not isinstance(obj, dict):
+        return None
+    res = obj.get('results') or []
+    if not res:
+        return None
+    got = 0
+    for x in res:
+        try:
+            i = int(x.get('idx', 0)) - 1
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= i < len(rubrics)) or not x.get('met'):
+            continue
+        c = rubrics[i]
+        got += c['score'] if rubric.is_positive(c) else -abs(c['score'])
+    sm = rubric.s_max(rubrics)
+    return got / sm if sm else None
+
+
+SYS_ONTARGET = '''判断一份回答是否在回答题目问的那件事。
+
+只看**主题是否对得上**，不评价质量、深度、篇幅、正误细节：
+- 题目问的是 A 概念/A 情形，回答讲的是同名但不同领域的 B 概念 → off_target
+- 题目给定的模型/前提/条件，回答换成了另一套自己设定的 → off_target
+- 主题对上了，只是讲得浅、漏了点、某处算错 → on_target
+
+只输出 JSON：{"on_target": true/false, "why": "≤30字"}'''
+
+
+def check_on_target(m, r):
+    """地板题前置门：strong 档是否在答同一件事。
+
+    388 全量实测：22 道地板题里 5 道 strong 档答案程序化核验就是错的（已在
+    s11Lc 跳过），另有 q0047（问相空间刘维尔定理，答的是复分析那个）、q0071
+    （题给两对互补基因的分离比，答成单基因+抑制基因）这类**答偏题**的。
+    参照系本身偏了，放松准则只会把 rubric 改坏 —— 不重写，标记出来。
+    返回 (on_target: bool, why: str)。判不出来时按 True 放过（宁放过不误杀）。
+    """
+    st = [p for p in (r.get('pool') or []) if p['tier'] == 'strong']
+    if not st:
+        return True, ''
+    q = (r.get('query_eff') or r['question'])[:1200]
+    u = f'【题目】\n{q}\n\n【回答】\n{(st[0].get("text") or "")[:2500]}'
+    obj, _ = stage.json_call(m, [{'role': 'system', 'content': SYS_ONTARGET},
+                                 {'role': 'user', 'content': u}],
+                            stage='s11Ld', thinking=False)
+    if not isinstance(obj, dict) or 'on_target' not in obj:
+        return True, ''
+    return bool(obj.get('on_target')), str(obj.get('why', ''))[:60]
+
+
 def apply(r, obj, action):
     """把模型返回的 rubric 套回记录：分值守恒 + 血缘继承 + 逐槽对齐。"""
     orig = r.get('rubrics') or []
@@ -266,6 +356,16 @@ def main():
     def one(rid):
         r = by_rid[rid]
         action, info = plan[rid]
+        # 地板题先过「答的是不是同一件事」门：strong 答偏题时放松准则等于把
+        # rubric 往错的方向改，只标记不重写。
+        if action == 'floor':
+            ok, why = check_on_target(m, r)
+            if not ok:
+                return rid, None, f'strong 档答偏题：{why}', 'off_target'
+            # 锚能拿到分 → 准则可满足，地板来自 pool 侧，不动 rubric
+            reach, best = anchor_reachable(m, r)
+            if reach:
+                return rid, None, f'参考回复在本 rubric 上得 {best:.0%}，准则可满足', 'anchor_ok'
         msgs = build(r, action, info)
         last = None
         for attempt in range(2):
@@ -285,6 +385,9 @@ def main():
 
     done, errs = stage.run(one, jobs, workers=WORKERS, desc='s11Ld')
     new_rubrics = {rid: rubs for rid, rubs, note, err in done if rubs}
+    # 答偏题的地板题：不重写，记原因
+    off_target = {rid: note for rid, rubs, note, err in done
+                  if not rubs and err in ('off_target', 'anchor_ok')}
 
     res, n_ok = [], 0
     for r in recs:
@@ -300,6 +403,11 @@ def main():
                         'note': ''})
             res.append({**r, 'rubrics': rid_out, 's11Ld': rec})
             n_ok += 1
+        elif r['rid'] in off_target:
+            # 参照系偏了，rubric 不动：这是 pool 侧的问题，等 strong 重生成
+            rec.update({'action': 'pool_off_target', 'rewritten': False,
+                        'note': off_target[r['rid']]})
+            res.append({**r, 's11Ld': rec})
         else:
             if action in ('hackable', 'floor'):
                 rec['rewritten'] = False
@@ -313,8 +421,11 @@ def main():
     print(f'  重写成功    : {n_ok}/{len(jobs)} 题')
     for r in res:
         d = r['s11Ld']
-        if d['action'] in ('hackable', 'floor', 'pool_suspect', 'review'):
+        if d['action'] in ('hackable', 'floor', 'pool_suspect', 'review',
+                           'pool_off_target'):
             mark = '✓ 已重写' if d.get('rewritten') else ('✗ 失败' if d.get('fail') else '（仅标记）')
+            if d['action'] == 'pool_off_target':
+                mark = f'（不重写：{d.get("note", "")}）'
             print(f'    {r["rid"]}  {d["action"]:<14} {mark}  '
                   f'{d["criteria_before"]}→{d.get("criteria_after", d["criteria_before"])} 条')
 
