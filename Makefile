@@ -1,5 +1,8 @@
 # 常用入口（纯标准库，无安装步骤；全部在仓库根目录执行）
-.PHONY: check seed phase4 checkpoint2 export
+.PHONY: all check seed phase4 checkpoint2 export
+
+all:              ## 一键全流程（配置好 models.json 与 data/input.xlsx 后）
+	bash scripts/rerun_all.sh
 
 check:            ## 静态检查 + 语义核心单测（零 LLM）
 	python3 -m py_compile stages/*.py scripts/*.py lib/*.py tests/*.py

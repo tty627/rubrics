@@ -45,7 +45,7 @@ docs/
 outputs/
   excel/     填充后的 xlsx 产出
   samples/   样例展示
-scripts/     辅助脚本 + 三个一键重跑（rerun_lean_fixed / rerun_phase4 / rerun_checkpoint2）；一次性脚本在 scripts/legacy/
+scripts/     全流程一键入口 rerun_all.sh + 三个分段一键（rerun_lean_fixed / rerun_phase4 / rerun_checkpoint2）；一次性脚本在 scripts/legacy/
 pyproject.toml 项目元数据（纯标准库，零依赖）；Makefile 常用入口（make check / seed / phase4 / checkpoint2 / export）
 ```
 
@@ -94,7 +94,9 @@ s04c_severity.jsonl（452）
 `fill_xlsx_preserve_format.py` 的默认源都已对齐；`audit_rubrics.py` 把
 「负项缺 severity」计入指标，换错源审计里会亮。
 
-一键重跑：`bash scripts/rerun_lean_fixed.sh`（清缓存加 `RP_CLEAN=1`）。
+全流程一键：`bash scripts/rerun_all.sh`（= 分段三脚本顺序跑完 + 就绪检查 + 审计单测，
+模型默认 GEN/FILTER/ROUTE=glm-ac、判分相关=cn-*，见脚本头部注释）。
+分段一键：`bash scripts/rerun_lean_fixed.sh`（清缓存加 `RP_CLEAN=1`）。
 
 每步输出在 `data/` 下，缓存在 `cache/<stage>/<hash>.json`。
 
