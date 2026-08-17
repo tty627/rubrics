@@ -53,7 +53,9 @@ def load(path=None, check=True):
                   no_think_extra=d.get('no_think_extra'),
                   # 键不存在 → 用默认温度；键存在但为 null → 不发 temperature 字段
                   temperature=(d['temperature'] if 'temperature' in d
-                               else '__default__'))
+                               else '__default__'),
+                  # 走流式 SSE。用于绕开网关响应超时（见 Model.stream 文档）
+                  stream=d.get('stream', False))
         pg = d.get('pool_group')
         if pg:
             pools.setdefault(pg, []).append(m)
