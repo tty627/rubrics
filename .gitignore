@@ -2,7 +2,8 @@
 cache/
 *.cache
 
-# 中间产物与最终交付的 xlsx，不入库
+# 中间产物、种子与最终交付的 xlsx 一律不入库（GitLab 只传可运行源码；
+# 数据随侧车 tar 走，见 docs/design/RESTRUCTURE_PROPOSAL.md §4）
 data/
 outputs/
 logs/

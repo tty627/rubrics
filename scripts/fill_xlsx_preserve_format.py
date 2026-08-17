@@ -21,7 +21,7 @@ def format_rubric(rubrics, full_mark):
     """格式化为导师指定 schema 的可读文本。
 
     rubrics 每条含 criteria / score / reason / dimension / is_positive；
-    负项另带 severity / is_veto（s04Lc 起）。
+    负项另带 severity / is_veto（s04c_severity 起）。
     正向准则按 score 从高到低排，负向准则统一列在末尾。
     闸门项标 ⭐（gated_answer 的答案判据），veto 项标 🚫 并在末尾声明聚合规则 ——
     xlsx 是人看的那份交付，一票否决的规则不能只藏在 jsonl 字段里。

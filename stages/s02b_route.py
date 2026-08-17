@@ -139,7 +139,7 @@ def main():
 
     out, _ = stage.run(work, recs, workers=WORKERS, desc='s02_5')
     stage.stat_cached([r.pop('_meta') for r in out])
-    stage.write_jsonl('s02_5_route.jsonl', out)
+    stage.write_jsonl('s02b_route.jsonl', out)
 
     qt = Counter(r['question_type'] for r in out)
     fm = Counter(r['rubric_form'] for r in out)

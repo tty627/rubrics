@@ -1,4 +1,4 @@
-"""步骤 12L：判分 —— 用 rubric 逐条判定回复池里每条回复，输出 y/n + 证据句。
+"""步骤 12：判分 —— 用 rubric 逐条判定回复池里每条回复，输出 y/n + 证据句。
 
 **硬约束第 2 条：判分器必须与生成器不同源。**
 生成用 glm-ac（family=glm），判分用 openai 系。同系列模型有自偏好偏差，
@@ -9,23 +9,23 @@
 
 **gated_answer 的答案项走程序化核验**：数学答案精确匹配、代码看输出，
 不必过 LLM。这是 RLVR 的做法，比 LLM 判分更可靠也更便宜。
-判定依据是 s05L 抽出的 `answer` 字段（有锚点真值才敢这么做）。
+判定依据是 s05_ground 抽出的 `answer` 字段（有锚点真值才敢这么做）。
 命中程序化核验的准则记 `by_program=True`，与 LLM 判的分开统计。
 
 **消除位置偏差**：同一批判分固定准则顺序（按 _criterion_id 排序）与呈现顺序。
 一次调用判完一条回复的所有准则，而不是每条准则单独调 —— 后者会让判分器
 失去「这份回复整体什么样」的上下文，对完整性类准则尤其不公。
 
-**veto 一票否决聚合**（2026-08-14，s04Lc 打标）：
+**veto 一票否决聚合**（2026-08-14，s04c_severity 打标）：
   rubric 负项可能带 is_veto（原则性错误）。veto 项被判 met → 该档整题得分率
   rate 归 0（不进补偿式求和，lib/rubric.VETO_RULE），同时保留 raw_rate
-  （不含 veto 的补偿式得分率，s11Lc 区分度诊断与审计都只能用它，否则
+  （不含 veto 的补偿式得分率，s11c_consequential 区分度诊断与审计都只能用它，否则
   veto 归零会污染 gap/std/floor 三条判据）。证据纪律同正向项：veto 判 true
   必须给原文证据句。两票制：veto 命中时用第二个异源模型复判，两票才生效；
   复判模型的 family 必须既不同于生成器、也不同于第一判分器（硬约束第 2 条）。
 
-输入: s10L_pool.jsonl（含 rubrics + pool，负项可带 severity/is_veto）
-输出: s12L_judged.jsonl，每题每条回复一份判分结果
+输入: s10_pool.jsonl（含 rubrics + pool，负项可带 severity/is_veto）
+输出: s12_judged.jsonl，每题每条回复一份判分结果
 """
 import json, os, re, sys
 from collections import Counter, defaultdict
@@ -35,8 +35,8 @@ from lib import stage, rubric, config
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
 THINK = stage.envflag('RP_THINK', True)
-SRC = os.environ.get('RP_S12L_SRC', 's10L_pool.jsonl')
-OUT = os.environ.get('RP_S12L_OUT', 's12L_judged.jsonl')
+SRC = os.environ.get('RP_S12L_SRC', 's10_pool.jsonl')
+OUT = os.environ.get('RP_S12L_OUT', 's12_judged.jsonl')
 
 SYS = '''你是评分器。给定一道题、一份回答、一组评分准则，逐条判定该回答是否满足。
 
@@ -69,11 +69,11 @@ idx 对应下方准则的编号，必须每条都给。'''
 #   q0303  正确答案是对抗回复的子串（对抗档末尾多加了 ",1"）→ 答错却判对
 #   q0048  answer 存的是整句话「将 host 配置为 0.0.0.0，例如 uvicorn ...」，
 #          强档回复写了 --host 0.0.0.0 但措辞不同 → 答对却判错，闸门项直接清零
-# 现在改为按 s05L 给出的 answer_kind 分策略，且只认 answer_canonical（最小可判定串）。
+# 现在改为按 s05_ground 给出的 answer_kind 分策略，且只认 answer_canonical（最小可判定串）。
 # 2026-08-14 修复（48 试点审计）：
 #   - option 正则负向断言禁止字母后跟句点 → `A.` 永不命中（q0179 闸门清零）
 #   - 短数字（≤2 位）全文本匹配被公式常数命中（q0166 canon='2' 命中 '2π'）
-#   核验逻辑已抽到 lib/answer_check.py，与 s10L 的反向校验共用。
+#   核验逻辑已抽到 lib/answer_check.py，与 s10_pool 的反向校验共用。
 from lib import answer_check
 check_program = answer_check.check_program
 
@@ -152,7 +152,7 @@ def main():
     m_gen = stage.pick('RP_M_GEN', 'generator')
     recs = stage.read_jsonl(SRC)
 
-    print(f'步骤 12L 判分: {len(recs)} 题, 源={SRC}')
+    print(f'步骤 12 判分: {len(recs)} 题, 源={SRC}')
     print(f'  判分器={m.name} (family={m.family})  生成器={m_gen.name} (family={m_gen.family})')
     if m.family == m_gen.family:
         sys.exit(f'✗ 违反硬约束第 2 条：判分器与生成器同为 {m.family} 系，'
@@ -191,7 +191,7 @@ def main():
         if (r.get('rubric_form') == 'gated_answer' and canon
                 and r.get('answer_sound', True)):
             # 闸门判定口径 = lib/rubric.gate_indices
-            # （与 s11Lb 豁免、交付档 is_gate 同一规则），下标转 1 起对齐 idx
+            # （与 s11b_remedy 豁免、交付档 is_gate 同一规则），下标转 1 起对齐 idx
             gates = [i + 1 for i in rubric.gate_indices(rubrics)]
             if len(gates) == 1:
                 ok, hit = check_program(kind, canon, resp['text'])
@@ -326,7 +326,7 @@ def main():
         res.append({**r, 's_max': s_max, 'judged': scored})
     stage.write_jsonl(OUT, res)
 
-    print(f'\n=== 步骤 12L 结果 ===')
+    print(f'\n=== 步骤 12 结果 ===')
     if errs:
         print(f'  失败        : {len(errs)} 条')
     n_prog = sum(1 for r in res for t in r['judged'].values()

@@ -1,11 +1,11 @@
-"""步骤 4Lb：缺陷准则重写 —— 消费 s11Lb 的待拆队列 + s04L 的质量标记。
+"""步骤 4b：缺陷准则重写 —— 消费 s11b_remedy 的待拆队列 + s04_rubric 的质量标记。
 
-**为什么单独一步**：s11Lb 把 RIFT 判为 non-atomic 的准则落到 _defect_queue.jsonl
+**为什么单独一步**：s11b_remedy 把 RIFT 判为 non-atomic 的准则落到 _defect_queue.jsonl
 而不是删掉（删是错误处置，实测会把 gated_answer 的答案项删掉）。这一步把它们拆开。
-同时处理 s04L 的 flag() 打的五类质量标记 —— 这两件事的处理单元都是「一条准则」，
+同时处理 s04_rubric 的 flag() 打的五类质量标记 —— 这两件事的处理单元都是「一条准则」，
 输出形状也都是「1-2 条替换准则」，所以合并成一步，省一轮遍历。
 
-只对命中的准则调 LLM，不动干净的准则 —— 这是不全量重跑 s04L 的关键。
+只对命中的准则调 LLM，不动干净的准则 —— 这是不全量重跑 s04_rubric 的关键。
 
 两类任务：
   split   非原子 → 拆成 2 条，分值按重要性拆分，和不变
@@ -21,8 +21,8 @@
 2. 题目总量不超 N_MAX。拆分会涨条数，超预算时只拆分值最高的几条 —— 拆不完的
    保留原样并打 _split_skipped，不静默丢弃。
 
-输入: s11Lb_remedied.jsonl + _defect_queue.jsonl
-输出: s04Lb_split.jsonl（结构同 s11Lb_remedied，rubrics 已重写）
+输入: s11b_remedied.jsonl + _defect_queue.jsonl
+输出: s04b_split.jsonl（结构同 s11b_remedied，rubrics 已重写）
 """
 import json, os, sys
 from collections import Counter, defaultdict
@@ -32,7 +32,7 @@ from lib import stage, dimensions, rubric
 
 WORKERS = int(os.environ.get('RP_WORKERS', 14))
 THINK = stage.envflag('RP_THINK', True)
-SRC = os.environ.get('RP_S04LB_SRC', 's11Lb_remedied.jsonl')
+SRC = os.environ.get('RP_S04LB_SRC', 's11b_remedied.jsonl')
 QUEUE = os.environ.get('RP_S04LB_QUEUE', '_defect_queue.jsonl')
 N_MAX = int(os.environ.get('RP_RUBRIC_MAX', 8))
 
@@ -295,7 +295,7 @@ def main():
                 room -= 1
             jobs.append((r['rid'], c['_criterion_id'], kind, flags))
 
-    print(f'步骤 4Lb 缺陷重写: {len(recs)} 题, 模型={m.name}')
+    print(f'步骤 4b 缺陷重写: {len(recs)} 题, 模型={m.name}')
     print(f'  待拆队列   : {len(queue)} 条')
     print(f'  任务数     : {len(jobs)}  '
           f'(split={sum(1 for j in jobs if j[2] == "split")}, '
@@ -355,11 +355,11 @@ def main():
         res.append({**r, 'rubrics': out, 'core_n': len(out),
                     'core_n_positive': len(pos),
                     's_max': rubric.s_max(out)})
-    stage.write_jsonl('s04Lb_split.jsonl', res)
+    stage.write_jsonl('s04b_split.jsonl', res)
 
     n_before = sum(len(r.get('rubrics') or []) for r in recs)
     n_after = sum(len(r['rubrics']) for r in res)
-    print(f'\n=== 步骤 4Lb 结果 ===')
+    print(f'\n=== 步骤 4b 结果 ===')
     if errs:
         print(f'  失败        : {len(errs)} 条')
     print(f'  重写成功    : {len(repl)} 条 → {len(repl) + n_new} 条')

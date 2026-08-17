@@ -19,7 +19,9 @@ lean 主线已在 452 条跨学科种子集上跑通全量（2026-08-13）。产
 
 准则数不是「越多越好」的指标。旧的逐视角展开路径能做到 30.5 条/题，但 RIFT 判非原子命中 80.8%——条数是靠把多个要求捆在一条里堆出来的，逐条二元判定会失效。现在的目标是粒度对齐 + 维度铺开。
 
-Phase 4（回复池 + 判分验证）未开工，见下方「待做」。
+**Phase 4 实测全量已跑通（2026-08-17）**：388 道双回复题、6 档回复池 2328 条回复、16517 条判分、3 轮处置闭环 + 终态选择。无缺陷率 66.2% → 73.2%，无一题退步。残留 LowSignal 42 / floor 13 / Hackable 13 / skip 32（测量受限）。
+
+**检查点 2（放行闸门）已通过**：新 rubric 与草稿 rubric 在 351 个可测对上的 pairwise 判别率 93.2% vs 77.2%、反转率 2.3% vs 2.8%，判分侧证据链闭合。详见 `docs/reports/PHASE4_CHECKPOINT2.md`。
 
 ## 快速开始
 
@@ -34,7 +36,7 @@ python3 scripts/check_before_run.py
 python3 stages/s00_seed.py
 python3 stages/s01_filter.py
 python3 stages/s02_context.py
-python3 stages/s02_5_route.py
+python3 stages/s02b_route.py
 RP_RET=lean python3 stages/s03_perspective.py
 
 # 4. 跑准则生成与诊断段（已有 s03 产出时从这里开始）
@@ -42,9 +44,12 @@ bash scripts/rerun_lean_fixed.sh                   # 清缓存加 RP_CLEAN=1
 
 # 5. 审计产出质量
 python3 scripts/audit_rubrics.py
+
+# 6. 语义核心单测（零 LLM，改 lib/rubric.py 前必跑）
+python3 tests/test_rubric.py
 ```
 
-`rerun_lean_fixed.sh` 只覆盖 s04L → s11L → s11Lb → 导出这一段，前四步需单独跑。缓存全命中时整段是秒级。
+`rerun_lean_fixed.sh` 只覆盖 s04_rubric → s11_diagnose → s11b_remedy → 导出这一段，前四步需单独跑。缓存全命中时整段是秒级。
 
 只想看结果，不跑流水线：
 
@@ -80,7 +85,7 @@ cat docs/advisor/generated_rubrics_samples.md      # 3 个完整案例
 
 - `score` 是原始整数权重，不在流水线内归一（正向 1-3，verifiable 的答案项 6-8；负向 -2/-3）。`full_mark = sum(正向 score)`，跨题可比性靠判分阶段算得分率解决。
 - `is_gate` 标出 gated_answer 题的答案项是哪一条。它仍计入 `full_mark` 分母，0/1 语义由判分侧处理。
-- `severity`（`principle` 466 / `major` 146 / `minor` 2）与 `is_veto`（195 条，覆盖 166 题）只挂负向准则。veto 是补偿式总分上的合取门，聚合规则显式声明在 `lib/rubric.VETO_RULE`：**任一 `is_veto` 项被判定成立 → 整题得分率为 0，不进补偿式求和**。veto 项本身不进 `full_mark` 分母，归零由判分侧执行（`s12L_judge` 走两票制：第二个异源模型复判确认才生效）。
+- `severity`（`principle` 466 / `major` 146 / `minor` 2）与 `is_veto`（195 条，覆盖 166 题）只挂负向准则。veto 是补偿式总分上的合取门，聚合规则显式声明在 `lib/rubric.VETO_RULE`：**任一 `is_veto` 项被判定成立 → 整题得分率为 0，不进补偿式求和**。veto 项本身不进 `full_mark` 分母，归零由判分侧执行（`s12_judge` 走两票制：第二个异源模型复判确认才生效）。
 - `multi_part` 题额外带 `blocks`（121 题），保留子题结构。
 - 血缘标签（`_criterion_id` / `_perspective_ids` / `_scenario_ids`）、RIFT 诊断结果、质量标记只进 `outputs/rubrics_internal.jsonl`（`--full`），不进交付档。
 
@@ -91,13 +96,17 @@ data/input.xlsx
   ↓ s00_seed          seed.jsonl 453 条 + baseline.json（草稿基线指标）
   ↓ s01_filter        真人 query 甄别 + 缺陷判定 → 直通 450 / 改写 3
   ↓ s02_context       intent + 隐性约束 + Scenarios（3.2/题）
-  ↓ s02_5_route       题型判定 → verifiable 121 / open 287 / hybrid 44
+  ↓ s02b_route       题型判定 → verifiable 121 / open 287 / hybrid 44
   ↓ s03_perspective   RET 视角展开（RP_RET=lean，3.2 视角/题）
-  ↓ s04L_rubric       准则直出，全题 6-8 条预算制 → 2452 条
-  ↓ s11L_diagnose     RIFT 四检测器 → 760/2452 defective (31.0%)
-  ↓ s11Lb_remedy      分级处置：删 147 条，561 条落 _defect_queue.jsonl 待重写
-  ↓ s04Lb_split       消费队列：拆非原子 + 事实纠错 + 标记重写 → 2500 条
-  ↓ s04Lc_severity    负项分级（614 条）+ veto 标记（195 条）→ 交付源
+  ↓ s04_rubric       准则直出，全题 6-8 条预算制 → 2452 条
+  ↓ s11_diagnose     RIFT 四检测器 → 760/2452 defective (31.0%)
+  ↓ s11b_remedy      分级处置：删 147 条，561 条落 _defect_queue.jsonl 待重写
+  ↓ s04b_split       消费队列：拆非原子 + 事实纠错 + 标记重写 → 2500 条
+  ↓ s04c_severity    负项分级（614 条）+ veto 标记（195 条）→ 452 题交付源
+
+Phase 4 实测线（388 双回复题）：s10_pool → s12_judge → s11c_consequential →
+s11d_remedy ×3 轮闭环 → s11e_select → 合并 64 单回复题 → `data/s11e_all452.jsonl` ← 最终交付源。
+检查点 2：s12b_draft_judge → s12c_pairwise。一键：`bash scripts/rerun_phase4.sh` /`bash scripts/rerun_checkpoint2.sh`（完整数据流见 CLAUDE.md）。
   ↓ export_advisor_schema.py
       outputs/rubrics_advisor_lean.jsonl   交付档
       outputs/rubrics_internal.jsonl       内部档（血缘 / 诊断 / 标记）
@@ -105,9 +114,9 @@ data/input.xlsx
 
 每步独立读写 `data/` 下的 jsonl，可单独重跑不影响其他步。LLM 调用按 `model + prompt + params` 哈希缓存到 `cache/<stage>/`，改一个 prompt 只重算受影响的哈希。
 
-`s02_5_route` 少一条（q0222）是该条调用失败被 `stage.run` 丢弃，不是过滤判弃用。重跑该步可补回。
+`s02b_route` 少一条（q0222）是该条调用失败被 `stage.run` 丢弃，不是过滤判弃用。重跑该步可补回。
 
-导出源必须是流水线末端（当前 `data/s04Lc_severity.jsonl`）。`export_advisor_schema.py` 的 `--src` 默认值与 `scripts/rerun_lean_fixed.sh` 已对齐到这一步 —— 指向中间步会静默丢掉后续产出，这个坑踩过两次（RIFT 诊断未生效、`severity`/`is_veto` 全空）。`scripts/audit_rubrics.py` 现在把「负项缺 severity」计入指标，换错源会在审计里亮出来。
+导出源必须是流水线末端（跑过 Phase 4 是 `data/s11e_all452.jsonl`，没跑是 `data/s04c_severity.jsonl`）。`export_advisor_schema.py` 的 `--src` 默认值与 `scripts/rerun_lean_fixed.sh` 已对齐到这一步 —— 指向中间步会静默丢掉后续产出，这个坑踩过两次（RIFT 诊断未生效、`severity`/`is_veto` 全空）。`scripts/audit_rubrics.py` 现在把「负项缺 severity」计入指标，换错源会在审计里亮出来。
 
 ## 题型路由
 
@@ -153,7 +162,7 @@ data/input.xlsx
 | 拆分未完成 | 33 条 | 超题目条数预算，保留原样并打 `_split_skipped` |
 | intent 含臆测措辞 | 156 题 (34.5%) | 上下文标签替用户想了没说的需求 |
 
-数据侧的一个根因还没修：`s00_seed.py` 的 `ref_errors` 只存了 key 名，错误内容被丢弃，而 `s04L` 却告诉模型「本题有 N 条错误可参考」——模型只能编。
+数据侧的一个根因还没修：`s00_seed.py` 的 `ref_errors` 只存了 key 名，错误内容被丢弃，而 `s04_rubric` 却告诉模型「本题有 N 条错误可参考」——模型只能编。
 
 种子集本身学科集中，前二占 83.2%（理学、工学与计算机），维度多样性的验证结论在别的分布上未必成立。
 
@@ -169,11 +178,36 @@ data/input.xlsx
 
 模型配置侧的强制要求（`lib/config.py` 校验）：步骤 6 多模型聚合需 ≥2 个 `generator` 且 `family` 不同；步骤 11 诊断需异质组合；步骤 12 `judge` 的 `family` 必须不同于 `generator`。
 
+## 命名规则
+
+stage 文件命名 `sNN[a-e]_语义词.py`：
+
+- `NN` = **PLAN.md 14 步计划里的步骤位**（与 legacy 编号、数据文件前缀、报告里「步骤 12」的说法一一对应，故意保留编号而不是只留语义名——顺序和步骤位就是信息）；
+- `a-e` = 同一步骤内的子步，按执行顺序编号（如 s11b → s11c → s11d → s11e）；
+- 数据文件默认名跟随 stage 前缀且不带基数（`s12_judged.jsonl`），实际跑某个数据集时由 rerun 脚本传带基数的 env（`RP_S12L_OUT=s12_judged388.jsonl`）；
+- 环境变量名（`RP_S04LC_SRC` 等）与 LLM 缓存目录名（`cache/s04L` 等）是历史接口，**刻意未改**——改了会丢全部缓存。
+
+2026-08-17 归一化改名对照（旧 → 新）：
+
+| 旧 | 新 | 旧 | 新 |
+|---|---|---|---|
+| s02_5_route | s02b_route | s11Lc_consequential | s11c_consequential |
+| s04L_rubric | s04_rubric | s11Ld_remedy | s11d_remedy |
+| s04Lb_split | s04b_split | s11Le_select | s11e_select |
+| s04Lc_severity | s04c_severity | s12L_judge | s12_judge |
+| s05L_ground | s05_ground | s12Lb_draft_judge | s12b_draft_judge |
+| s10L_pool | s10_pool | s12Lc_pairwise | s12c_pairwise |
+| s11L_diagnose | s11_diagnose | s11Lb_remedy | s11b_remedy |
+
+历史文档（`docs/reports/`、`legacy/`）里的旧名不追改，按上表对照。
+
 ## 仓库布局
 
 ```
-stages/      lean 主线 10 个脚本
-lib/         基础库 5 个：xlsx / llm / stage / config / dimensions
+stages/      20 个 stage，命名 `sNN[a-e]_语义词.py`（见下「命名规则」）
+lib/         基础库 7 个：xlsx / llm / stage / config / dimensions / rubric / answer_check
+tests/       语义核心纯逻辑单测（零 LLM）：test_rubric.py / test_s04_flags.py
+pyproject.toml  项目元数据（纯标准库，零依赖）；Makefile  常用入口（make check / seed / phase4 / ...）
 config/      模型端点配置（models.json 含 api_key，已 gitignore）
 scripts/     辅助脚本：导出、审计、统计、xlsx 填充、一键重跑
 tools/       watch.py 监视面板
@@ -182,14 +216,15 @@ docs/
   advisor/     给导师看的展示材料
   reports/     技术报告：审查、修复记录、phase 报告
 legacy/      已归档，不参与交付，保留可运行状态（见 legacy/README.md）
-  full_path/   旧全量线（被 s04L 取代）
+  full_path/   旧全量线（被 s04_rubric 取代）
   phase3/      多模型聚合支线
   phase4/      s05_grounding / s05b_anchor，Phase 4 启动时取回
 outputs/     交付档 + 内部档 + 填充后的 xlsx
-data/ cache/ logs/    中间产物、LLM 缓存、日志（均 gitignore）
+data/        中间产物与种子（全 gitignore，随侧车 tar 走）
+cache/ logs/  LLM 缓存、日志（均 gitignore）
 ```
 
-`data/`、`outputs/`、`cache/` 不入库，克隆后需自备 `data/input.xlsx` 并从 s00 跑起。
+`data/`、`outputs/`、`cache/`、`logs/` 全部不入库：GitLab 只传可运行源码，种子与中间产物随侧车 tar（`rubrics_data_outputs_20260817.tar.gz`）走，开发机解压到仓库根即可。打包方案见 `docs/design/RESTRUCTURE_PROPOSAL.md` §4。
 
 ## 监视面板
 
@@ -212,7 +247,7 @@ python3 tools/watch.py --tokens   # 展开 token 明细
 | `RP_CACHE` | `cache/` | 缓存目录 |
 | `RP_WORKERS` | 20 | 并发数 |
 | `RP_RET` | `hybrid` | RET 策略：lean / batch / hybrid / faithful。**lean 主线必须显式设 `lean`** |
-| `RP_RUBRIC_MIN` / `MAX` | 6 / 8 | s04L 每题准则预算 |
+| `RP_RUBRIC_MIN` / `MAX` | 6 / 8 | s04_rubric 每题准则预算 |
 | `RP_CLEAN` | 0 | 重跑脚本清缓存 |
 | `RP_EVENTS` | `cache/_events.jsonl` | 调用事件流水，设空串关闭 |
 | `RP_EV_CHARS` / `RP_EV_MAX` | 400 / 64 | 流水留字数 / 滚存阈值 MB |
@@ -221,9 +256,9 @@ python3 tools/watch.py --tokens   # 展开 token 明细
 
 ## 待做
 
-**Phase 4 判分验证**（约 +10k-15k 次调用）：把 `legacy/phase4/` 的 `s05_grounding`、`s05b_anchor` 移回 `stages/`，接步骤 10（回复池）、12（判分）、13（按维度聚合失败原因）、14（回灌）。这是验证 rubric 有效性的必要环节——目前所有指标都是结构指标，还没有「用它判分是否与人工标注一致」的证据。
+**步骤 13 badcase 聚合 + 步骤 14 回流**：把 Phase 4 残留缺陷（LowSignal 42 / floor 13 / Hackable 13、检查点 2 里 9 道新 rubric 劣于草稿的题）按维度聚合失败原因，回灌视角库。
 
-**修完剩余缺陷**：`_split_skipped` 33 条、闸门丢失 2 题、`ref_errors` 内容丢弃、`rerun_lean_fixed.sh` 接 s04Lb。
+**已知未修**：cut 档 20.9% 造法失效（LLM 删段不可靠，要改程序化删段）；64 道单回复题按硬约束 1 无法进 Phase 4，缺实测证据；`ref_errors` 内容丢弃（s00_seed 只存 key 名）。
 
 **清理陈旧文档**：`docs/RUBRICS_SCORE_BREAKDOWN.md`、`docs/RUBRICS_PURPOSE_AND_USAGE.md`、`docs/advisor/README_FOR_ADVISOR.md` 仍按「满分统一 100、30.5 条/题」写，那是旧全量线的口径，已不成立。
 

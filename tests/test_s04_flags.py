@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""测试修复后的 s04L：验证答案项占比自动调整和负向准则约束。
+"""测试修复后的 s04_rubric 程序化护栏：验证答案项占比自动调整和负向准则约束。
 
-运行前：备份现有 s04L_rubric.jsonl
+运行前：备份现有 s04_rubric.jsonl
 运行后：对比修复前后的问题题目
 """
 import json
@@ -66,7 +66,7 @@ def check_issues(jsonl_path):
 
 def main():
     original = os.path.join(REPO, 'outputs', 'rubrics_advisor_lean.jsonl')
-    new = os.path.join(REPO, 'data', 's04L_rubric.jsonl')
+    new = os.path.join(REPO, 'data', 's04_rubric.jsonl')
 
     if not os.path.exists(original):
         print(f'❌ 找不到原始文件: {original}')
@@ -84,7 +84,7 @@ def main():
             print()
 
     if os.path.exists(new):
-        print('\n=== 修复后（新生成 s04L_rubric.jsonl）===\n')
+        print('\n=== 修复后（新生成 s04_rubric.jsonl）===\n')
         issues_new, n_new = check_issues(new)
         for issue_type, samples in issues_new.items():
             if samples:
@@ -107,7 +107,7 @@ def main():
 
     else:
         print(f'\n⚠️  新文件不存在: {new}')
-        print('   请先运行: python3 stages/s04L_rubric.py')
+        print('   请先运行: python3 stages/s04_rubric.py')
 
 
 if __name__ == '__main__':

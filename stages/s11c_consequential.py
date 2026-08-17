@@ -1,7 +1,7 @@
-"""步骤 11Lc：Consequential 类诊断 —— Hackable 与 Low Signal。
+"""步骤 11c：Consequential 类诊断 —— Hackable 与 Low Signal。
 
-RIFT 八失效模式里唯一需要回复池的两个，所以单独一步，跑在 s12L 之后。
-另外六个（Subjective/Non-Atomic/Ungrounded/Factual/Missing/Redundant）在 s11L。
+RIFT 八失效模式里唯一需要回复池的两个，所以单独一步，跑在 s12_judge 之后。
+另外六个（Subjective/Non-Atomic/Ungrounded/Factual/Missing/Redundant）在 s11_diagnose。
 
 **这一步的价值**：在它之前，「区分度」全靠静态文本分析猜（数「且」字、看有没有
 「全部」、看是不是「提及」开头）。那只能说明写法可疑。这里用实测得分说话。
@@ -21,11 +21,11 @@ RIFT 八失效模式里唯一需要回复池的两个，所以单独一步，跑
      测的是表面特征，不是内容
 
 2026-08-14 修复（48 试点审计，docs/reports/AUDIT_48PILOT_PHASE4.md）：
-  A. gated 题弱档口径：weak_mean 只认 weak+adv，剔除 trunc/cut（对齐 s10L
+  A. gated 题弱档口径：weak_mean 只认 weak+adv，剔除 trunc/cut（对齐 s10_pool
      自己写明的「截断和删论点对数学题没意义」——截断前 40% 仍含答案，
      天然高分，制造 LowSignal 假阳性）。
   B. 构造失效剔除（用判分数据做后验）：
-     - s10L 标的 degraded（cut 删量不足）、answer_correct（adv/weak 把答案
+     - s10_pool 标的 degraded（cut 删量不足）、answer_correct（adv/weak 把答案
        答对了）的档位直接剔除；
      - trunc/cut 与 strong 的正向 met 集完全相同时 → 删/截没有删掉任何
        得分点，该档造法失效，剔除（审计：15/24 的假 Hackable 来自此类）。
@@ -40,7 +40,7 @@ RIFT 八失效模式里唯一需要回复池的两个，所以单独一步，跑
      （实测 q0301 对抗档正确推导+空集结论，过程准则翻转造成假 Hackable）；
      gated 弱档追平强档 = 疑似把答案答对（canon 缺失拦不住），弱档对 gap
      度量作废并降级待复核；无有效弱档时 LowSignal 抑制（测量受限非 rubric 缺陷）。
-  F. （2026-08-14 深夜）veto 隔离：s12L 的 veto 会把最终 rate 打到 0，
+  F. （2026-08-14 深夜）veto 隔离：s12_judge 的 veto 会把最终 rate 打到 0，
      若直接喂给 gap / std / floor 三条判据，强档一旦 veto，strong_rate=0
      立即触发 FLOOR_RATE 地板判定、LowSignal 成片假阳性。区分度诊断一律
      改用 raw_rate（不含 veto 的补偿式得分率），veto 命中单独统计
@@ -52,8 +52,8 @@ from collections import Counter, defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage, answer_check
 
-SRC = os.environ.get('RP_S11LC_SRC', 's12L_judged.jsonl')
-OUT = os.environ.get('RP_S11LC_OUT', 's11Lc_consequential.jsonl')
+SRC = os.environ.get('RP_S11LC_SRC', 's12_judged.jsonl')
+OUT = os.environ.get('RP_S11LC_OUT', 's11c_consequential.jsonl')
 
 LOW_GAP = float(os.environ.get('RP_LOW_GAP', 0.25))
 LOW_STD = float(os.environ.get('RP_LOW_STD', 0.12))
@@ -253,7 +253,7 @@ def diagnose(r):
 
 def main():
     recs = stage.read_jsonl(SRC)
-    print(f'步骤 11Lc Consequential 诊断: {len(recs)} 题, 源={SRC}')
+    print(f'步骤 11c Consequential 诊断: {len(recs)} 题, 源={SRC}')
     print(f'  判据: Low Signal(gap<{LOW_GAP:.0%} 或 std<{LOW_STD}) / '
           f'Hackable(对抗档或 weak 档 ≥ 强档，或准则级翻转)')
 
@@ -284,7 +284,7 @@ def main():
 
     n = len(recs)
     valid = n - skip_n
-    print(f'\n=== 步骤 11Lc 结果 ===')
+    print(f'\n=== 步骤 11c 结果 ===')
     if skip_n:
         print(f'  跳过        : {skip_n}/{n} 题（strong 档不可用，无比较基准）')
     print(f'  有效样本    : {valid} 题')

@@ -262,7 +262,7 @@ def work(m, r):
 
 def main():
     m = stage.pick('RP_M_GEN', 'generator')
-    recs = stage.read_jsonl(os.environ.get('RP_S03_SRC', 's02_5_route.jsonl'))
+    recs = stage.read_jsonl(os.environ.get('RP_S03_SRC', 's02b_route.jsonl'))
     print(f'步骤 3 视角展开: {len(recs)} 条, 模型={m.name}, 策略={STRATEGY}, '
           f'w1={W1} w2={W2}, thinking={THINK}')
 

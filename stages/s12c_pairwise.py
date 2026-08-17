@@ -1,14 +1,14 @@
-"""步骤 12Lc：Phase 4 检查点 2 —— 新 rubric vs 草稿 rubric 的 pairwise 一致率。
+"""步骤 12c：Phase 4 检查点 2 —— 新 rubric vs 草稿 rubric 的 pairwise 一致率。
 
 流程位置：判分侧证据齐了之后的放行闸门（PLAN.md §Phase 4 检查点 2）：
 「用新 rubric 和草稿 rubric 分别给 gpt55 vs 弱档打分，比 pairwise 一致率。
 新 rubric 不超过草稿就不上线」。
 
 数据来源：
-  - 新 rubric 判分：_s11Le.chosen_round 指向的轮次文件（s11Lc_cons388 / r1..r3），
+  - 新 rubric 判分：_s11Le.chosen_round 指向的轮次文件（s11c_cons388 / r1..r3），
     即**实际交付的那一版** rubric 在实测里的判分（judged[strong|weak].rate，
     含 veto 两票制后的最终得分率）
-  - 草稿 rubric 判分：s12Lb_draft388.jsonl（s12Lb_draft_judge.py 产出）
+  - 草稿 rubric 判分：s12b_draft388.jsonl（s12b_draft_judge.py 产出）
 
 样本口径：strong vs weak 对（检查点原文「gpt55 vs 弱档」）。剔除三类测量受限：
   - _s11Le.skipped=32（strong 档答错/答偏题等，参照系坏了不给结论）
@@ -21,8 +21,8 @@
 补充指标：一致率（strong ≥ weak）、平均分差、两 rubric 排序一致率、raw_rate
 口径的敏感性（veto 归零不是唯一驱动）。逐题结果落盘，供 badcase 审计。
 
-输入: s11Le_all452.jsonl + s11Lc_cons388/r1/r2/r3.jsonl + s12Lb_draft388.jsonl
-输出: s12Lc_pairwise.jsonl + 控制台放行结论
+输入: s11e_all452.jsonl + s11c_cons388/r1/r2/r3.jsonl + s12b_draft388.jsonl
+输出: s12c_pairwise.jsonl + 控制台放行结论
 """
 import json, os, sys
 from collections import Counter
@@ -30,9 +30,9 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
-OUT = os.environ.get('RP_S12LC_OUT', 's12Lc_pairwise.jsonl')
-ROUND_FILES = ('s11Lc_cons388.jsonl', 's11Lc_r1.jsonl', 's11Lc_r2.jsonl',
-               's11Lc_r3.jsonl')
+OUT = os.environ.get('RP_S12LC_OUT', 's12c_pairwise.jsonl')
+ROUND_FILES = ('s11c_cons388.jsonl', 's11c_r1.jsonl', 's11c_r2.jsonl',
+               's11c_r3.jsonl')
 
 
 def state_of(s, w):
@@ -40,14 +40,14 @@ def state_of(s, w):
 
 
 def main():
-    all452 = {r['rid']: r for r in stage.read_jsonl('s11Le_all452.jsonl')}
+    all452 = {r['rid']: r for r in stage.read_jsonl('s11e_all452.jsonl')}
     rounds = {}
     for fn in ROUND_FILES:
         try:
             rounds[fn] = {r['rid']: r for r in stage.read_jsonl(fn)}
         except FileNotFoundError:
             rounds[fn] = {}
-    draft = {r['rid']: r for r in stage.read_jsonl('s12Lb_draft388.jsonl')}
+    draft = {r['rid']: r for r in stage.read_jsonl('s12b_draft388.jsonl')}
 
     p4 = {rid: r for rid, r in all452.items()
           if (r.get('_s11Le') or {}).get('chosen_round') not in
@@ -138,7 +138,7 @@ def main():
           f'反转 {sraw["rev"]} / {n}')
 
     stage.write_jsonl(OUT, rows)
-    print(f'  逐题明细 → data/{OUT}')
+    print(f'  逐题明细 → {OUT}')
 
 
 if __name__ == '__main__':

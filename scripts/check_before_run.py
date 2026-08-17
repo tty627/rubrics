@@ -39,9 +39,9 @@ for path, desc in inputs:
 
 print('\n📊 当前中间数据状态\n')
 intermediates = [
-    ('data/s04L_rubric.jsonl', '步骤4L输出（准则直出）'),
-    ('data/s11L_diagnosed.jsonl', '步骤11L输出（RIFT诊断）'),
-    ('data/s11Lb_remedied.jsonl', '步骤11Lb输出（诊断处置）'),
+    ('data/s04_rubric.jsonl', '步骤4L输出（准则直出）'),
+    ('data/s11_diagnosed.jsonl', '步骤11L输出（RIFT诊断）'),
+    ('data/s11b_remedied.jsonl', '步骤11Lb输出（诊断处置）'),
 ]
 for path, desc in intermediates:
     status, ok = check_file(path, desc)
@@ -101,9 +101,9 @@ if all_inputs_ok:
     print()
     print('流程步骤:')
     print('  1. 备份旧产出 (outputs/rubrics_advisor_lean.jsonl → .bak)')
-    print('  2. 运行 s04L_rubric.py     → data/s04L_rubric.jsonl')
-    print('  3. 运行 s11L_diagnose.py   → data/s11L_diagnosed.jsonl')
-    print('  4. 运行 s11Lb_remedy.py    → data/s11Lb_remedied.jsonl')
+    print('  2. 运行 s04_rubric.py     → data/s04_rubric.jsonl')
+    print('  3. 运行 s11_diagnose.py   → data/s11_diagnosed.jsonl')
+    print('  4. 运行 s11b_remedy.py    → data/s11b_remedied.jsonl')
     print('  5. 导出交付版本            → outputs/rubrics_advisor_lean.jsonl')
     print('  6. 运行验证脚本            → 对比修复前后')
     print()
@@ -116,15 +116,15 @@ if all_inputs_ok:
     s04L_calls = n_recs  # 每题1次
     s11L_calls = n_recs * 7 * 3  # 每题约7条准则 × 3个诊断模式
 
-    print(f'  - s04L: {n_recs} 题 × 1 次/题 = {s04L_calls} 次调用')
-    print(f'  - s11L: {n_recs} 题 × ~7 条准则 × 3 模式 = ~{s11L_calls} 次调用')
+    print(f'  - s04_rubric: {n_recs} 题 × 1 次/题 = {s04L_calls} 次调用')
+    print(f'  - s11_diagnose: {n_recs} 题 × ~7 条准则 × 3 模式 = ~{s11L_calls} 次调用')
     print(f'  - 总计: ~{s04L_calls + s11L_calls} 次 LLM 调用')
     print()
     if Path('cache/s04L').exists():
         print('  💡 存在缓存，实际调用次数会减少（仅重新调用 prompt 改变的部分）')
     print()
     print('监控进度（另开终端）:')
-    print('  python3 tools/watch_v2.py')
+    print('  python3 tools/watch.py')
 else:
     print('\n❌ 输入数据缺失，无法运行！\n')
     print('请先运行步骤3生成输入:')

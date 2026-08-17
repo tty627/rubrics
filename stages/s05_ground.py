@@ -1,4 +1,4 @@
-"""步骤 5L：Response Grounding（lean 版）—— 用锚定回复抽出「可观察行为」，喂给 s04L。
+"""步骤 5：Response Grounding（lean 版）—— 用锚定回复抽出「可观察行为」，喂给 s04_rubric。
 
 **与 legacy/phase4/s05_grounding.py 的根本差别**：
   旧版插在 s04 **之后**，做事后 drift 检查（准则已经生成完了，再看哪条站不住）。
@@ -6,10 +6,10 @@
   事后的过滤器。而且旧版读的是 s04_criteria.jsonl 的旧 schema（positive/negative），
   和 lean 的 criteria/is_positive 不兼容，直接搬过来会崩。
 
-  本步插在 s04L **之前**：从锚定回复里抽出「一份实际回答在这道题上覆盖了哪些
-  可观察、可核对的内容点」，作为候选锚点交给 s04L。
+  本步插在 s04_rubric **之前**：从锚定回复里抽出「一份实际回答在这道题上覆盖了哪些
+  可观察、可核对的内容点」，作为候选锚点交给 s04_rubric。
 
-**为什么这一步能治事实错误**：s11L 的第四检测器在全量上抓到 286 条事实错误
+**为什么这一步能治事实错误**：s11_diagnose 的第四检测器在全量上抓到 286 条事实错误
 （准则里写死的答案是编的）。根因就是没有锚 —— 模型凭记忆写「最终答案为 k=5」。
 有了锚点，准则的具体内容有实际文本可依，不用凭记忆。
 
@@ -22,7 +22,7 @@
 
 锚点**不是满分答案**。它只是一份实际回答，可能有遗漏、有错。
 所以抽取时同时标注 `confidence` 与 `gaps`（这份回答明显没覆盖的方面），
-s04L 拿到后按置信度决定要不要采信。
+s04_rubric 拿到后按置信度决定要不要采信。
 """
 import json, os, sys
 from collections import Counter
@@ -32,8 +32,8 @@ from lib import stage
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
 THINK = stage.envflag('RP_THINK', True)
-SRC = os.environ.get('RP_S05L_SRC', 's02_5_route.jsonl')
-OUT = os.environ.get('RP_S05L_OUT', 's05L_grounded.jsonl')
+SRC = os.environ.get('RP_S05L_SRC', 's02b_route.jsonl')
+OUT = os.environ.get('RP_S05L_OUT', 's05_grounded.jsonl')
 N_MAX = int(os.environ.get('RP_ANCHOR_MAX', 8))
 
 SYS = f'''你在为一道题抽取「锚点」——即一份实际回答里**可观察、可核对**的内容点，
@@ -150,7 +150,7 @@ def parse(obj):
 def main():
     m = stage.pick('RP_M_GROUND', 'grounder')
     recs = stage.read_jsonl(SRC)
-    print(f'步骤 5L Response Grounding: {len(recs)} 条, 源={SRC}, 锚定模型={m.name}')
+    print(f'步骤 5 Response Grounding: {len(recs)} 条, 源={SRC}, 锚定模型={m.name}')
     n_shared = sum(1 for r in recs if anchor_of(r)[2])
     print(f'  单回复题（锚与待评共用）: {n_shared}/{len(recs)}'
           f'  ← 违反硬约束第 1 条，已标 anchor_shared')
@@ -190,7 +190,7 @@ def main():
     stage.write_jsonl(OUT, res)
 
     na = [len(r.get('anchors') or []) for r in res]
-    print(f'\n=== 步骤 5L 结果 ===')
+    print(f'\n=== 步骤 5 结果 ===')
     if errs:
         print(f'  失败        : {len(errs)} 条')
     print(f'  锚点/题     : min={min(na)} max={max(na)} mean={sum(na) / len(na):.1f}')

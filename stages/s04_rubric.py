@@ -1,4 +1,4 @@
-"""步骤 4L：准则直出（lean 版 s04）—— 一次调用产出全题最终 rubric。
+"""步骤 4：准则直出（lean 版 s04）—— 一次调用产出全题最终 rubric。
 
 与原 s04 的根本差别：**从「每视角展开 1-3 条」改为「全题一次出 6-8 条」**。
 
@@ -194,7 +194,7 @@ def build(r):
 
 
 def anchor_block(r):
-    """步骤 5L 的锚点。没跑 s05L 时返回空串，行为与之前完全一致（缓存不失效）。
+    """步骤 5 的锚点。没跑 s05_ground 时返回空串，行为与之前完全一致（缓存不失效）。
 
     锚点是治事实错误的根本手段：全量诊断抓到 286 条「准则里写死的答案是编的」，
     根因就是模型只看题目、凭记忆写具体数值。有锚之后，具体内容有实际文本可依。
@@ -234,7 +234,7 @@ def anchor_block(r):
 # ---- 程序化护栏（2026-08-13 加）----------------------------------------
 # prompt 里已经禁了这几类写法，但实测仍有残留（空泛词 17.3% 题、空壳答案 35 条、
 # 全量复合悬崖 72 条、提及即得分 29.6% 正项）。模型管不住的用代码兜：
-# 这里只打标不删，交给 s04Lb_split 按标重写，避免全量 452 题重跑。
+# 这里只打标不删，交给 s04b_split 按标重写，避免全量 452 题重跑。
 VAGUE = ('准确', '完整', '清晰', '合理', '充分', '恰当', '适当', '全面',
          '深入', '有效', '规范', '严谨', '系统性', '条理', '详细')
 # 「可核验锚点」：数字、拉丁串、公式符号、引号包裹的字面量
@@ -256,7 +256,7 @@ SUBJ_DEG = re.compile(r'严重|显著|根本性|明显|大幅|过度')
 
 
 def flag(final, s_max):
-    """给准则打质量标记。改标记不改内容，下游 s04Lb_split 据此重写。"""
+    """给准则打质量标记。改标记不改内容，下游 s04b_split 据此重写。"""
     for c in final:
         t = c['criteria']
         anchored = bool(ANCHOR.search(t))
@@ -318,8 +318,8 @@ def parse(r, raw):
             sc = min(sc, 8 if is_gate else 3)      # gated 的答案项要撑到 60-80%
         else:
             # 2026-08-14 松开：不再强制 -2/-3。负项严重性由分值大小（-1..-5）
-            # 与 severity 字段共同表达，s04Lc 会统一复核打标
-            # （本轮存量负项靠 s04Lc 补标，不重跑本步）。
+            # 与 severity 字段共同表达，s04c_severity 会统一复核打标
+            # （本轮存量负项靠 s04c_severity 补标，不重跑本步）。
             sc = -min(max(sc, 1), 5)
 
         pids = [p for p in (c.get('perspective_ids') or []) if p in valid_pids]
@@ -393,7 +393,7 @@ def parse(r, raw):
 def main():
     m = stage.pick('RP_M_GEN', 'generator')
     recs = stage.read_jsonl(SRC)
-    print(f'步骤 4L 准则直出: {len(recs)} 条, 源={SRC}, 模型={m.name}')
+    print(f'步骤 4 准则直出: {len(recs)} 条, 源={SRC}, 模型={m.name}')
     npp = sum(len(r.get('perspectives') or []) for r in recs)
     print(f'  输入视角: {npp} 条 ({npp / len(recs):.1f}/题)')
     print(f'  目标准则: {N_MIN}-{N_MAX} 条/题')
@@ -414,11 +414,11 @@ def main():
                     'core_n': len(rub),
                     'core_n_positive': len(pos),
                     's_max': rubric.s_max(rub)})
-    stage.write_jsonl('s04L_rubric.jsonl', res)
+    stage.write_jsonl('s04_rubric.jsonl', res)
 
     allc = [c for r in res for c in r['rubrics']]
     kept = [r['core_n'] for r in res if r['core_n']]
-    print(f'\n=== 步骤 4L 结果 ===')
+    print(f'\n=== 步骤 4 结果 ===')
     if errs:
         print(f'  失败          : {len(errs)} 条')
     empty = [r['rid'] for r in res if not r['core_n']]

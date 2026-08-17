@@ -1,8 +1,8 @@
-"""步骤 12Lb：草稿 rubric 判分 —— Phase 4 检查点 2 的判分侧。
+"""步骤 12b：草稿 rubric 判分 —— Phase 4 检查点 2 的判分侧。
 
 流程位置：Phase 4 实测线之后。检查点 2（PLAN.md §Phase 4）要求「用新 rubric
 和草稿 rubric 分别给 strong vs weak 打分，比 pairwise 一致率」——新 rubric 的
-判分数据已经在 s11Lc_cons388 / s11Lc_r1..r3 里（每轮闭环实测），**缺草稿这一半**。
+判分数据已经在 s11c_cons388 / s11c_r1..r3 里（每轮闭环实测），**缺草稿这一半**。
 
 草稿 rubric 来源：seed 的 draft_rubric（xlsx F 列，人工/草稿口径）：
   {"intent", "question_type", "rubrics": [{criteria, score, weight, reason, dimension}]}
@@ -11,7 +11,7 @@
   - 判分分值 = score × weight（baseline 的满分口径就是 Σ score×weight）
   - 草稿没有 is_gate / is_veto / severity —— 一律不标，veto 两票制不适用
 
-判分口径复用 s12L_judge 的 SYS + build()（同一套纪律：证据句、只判字面要求、
+判分口径复用 s12_judge 的 SYS + build()（同一套纪律：证据句、只判字面要求、
 答案类准则只认最终结论），换口径测出来的分数与检查点不可比。
 只判 strong + weak 两档（检查点原文「gpt55 vs 弱档」），不判 mid/trunc/cut/adv。
 
@@ -19,8 +19,8 @@
 by-judge（35.220.164.252 端点，2026-08-17 起持续 401），务必显式
 RP_M_JUDGE=cn-judge 运行（scripts/rerun_checkpoint2.sh 已固定）。
 
-输入: s10L_pool388.jsonl（含 draft_rubric + pool + query_eff/answer_*）
-输出: s12Lb_draft388.jsonl，每题 draft_judged = {strong, weak}，字段与 s12L 一致
+输入: s10_pool388.jsonl（含 draft_rubric + pool + query_eff/answer_*）
+输出: s12b_draft388.jsonl，每题 draft_judged = {strong, weak}，字段与 s12_judge 一致
       （score / s_max / raw_rate / rate / items / judge_incomplete / n_missing）。
 """
 import json, os, sys
@@ -28,17 +28,17 @@ from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage, rubric
-from stages import s12L_judge as s12L
+from stages import s12_judge as s12
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
 THINK = stage.envflag('RP_THINK', True)
-SRC = os.environ.get('RP_S12LB_SRC', 's10L_pool388.jsonl')
-OUT = os.environ.get('RP_S12LB_OUT', 's12Lb_draft388.jsonl')
+SRC = os.environ.get('RP_S12LB_SRC', 's10_pool388.jsonl')
+OUT = os.environ.get('RP_S12LB_OUT', 's12b_draft388.jsonl')
 TIERS = ('strong', 'weak')
 
 
 def draft_rubrics(r):
-    """把草稿 rubric 转成 s12L 判分器能吃的准则列表（口径见文件头）。"""
+    """把草稿 rubric 转成 s12_judge 判分器能吃的准则列表（口径见文件头）。"""
     d = r.get('draft_rubric') or {}
     out = []
     for i, c in enumerate(d.get('rubrics') or [], 1):
@@ -70,7 +70,7 @@ def one(job):
     if resp is None:
         return rid, tier, None
     rubrics = draft_rubrics(r)
-    msgs = s12L.build(r, resp, rubrics)
+    msgs = s12.build(r, resp, rubrics)
     need = {i for i in range(1, len(rubrics) + 1)}
     got = {}
     broken = ''
@@ -111,7 +111,7 @@ def one(job):
             ev = str(g.get('evidence', ''))[:200]
             why = str(g.get('reason', ''))[:120]
             byp = False
-            # 纪律 1（与 s12L 同）：正向项判 true 必须有原文证据
+            # 纪律 1（与 s12_judge 同）：正向项判 true 必须有原文证据
             if met and c['is_positive'] and not ev.strip():
                 met, why = False, '判 true 但未给证据句，按未满足处理'
         if met:
@@ -130,7 +130,7 @@ def main():
     m = stage.pick('RP_M_JUDGE', 'judge')
     m_gen = stage.pick('RP_M_GEN', 'generator')
     recs = stage.read_jsonl(SRC)
-    print(f'步骤 12Lb 草稿判分: {len(recs)} 题, 源={SRC}')
+    print(f'步骤 12b 草稿判分: {len(recs)} 题, 源={SRC}')
     print(f'  判分器={m.name} (family={m.family})  生成器={m_gen.name} '
           f'(family={m_gen.family})')
     if m.family == m_gen.family:
@@ -179,7 +179,7 @@ def main():
                     'draft_rubrics': dr, 'draft_judged': dict(agg[r['rid']])})
     stage.write_jsonl(OUT, res)
 
-    print(f'\n=== 步骤 12Lb 结果 ===')
+    print(f'\n=== 步骤 12b 结果 ===')
     if errs:
         print(f'  失败: {len(errs)} 条')
     for tier in TIERS:

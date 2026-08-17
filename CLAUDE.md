@@ -16,11 +16,11 @@ Rubric 生成能力建设：基于学术论文实现的评估标准(rubric)自�
 
 2. **stages/** - lean 主线，每步独立读写 jsonl
    - 每步可单独重跑，不影响其他步骤
-   - 结构线：s00_seed / s00b_sample / s01_filter / s02_context / s02_5_route
-     / s03_perspective / s04L_rubric / s11L_diagnose / s11Lb_remedy
-     / s04Lb_split / s04Lc_severity
-   - Phase 4 实测线：s10L_pool / s12L_judge / s11Lc_consequential
-     / s11Ld_remedy / s11Le_select
+   - 结构线：s00_seed / s00b_sample / s01_filter / s02_context / s02b_route
+     / s03_perspective / s04_rubric / s11_diagnose / s11b_remedy
+     / s04b_split / s04c_severity
+   - Phase 4 实测线：s10_pool / s12_judge / s11c_consequential
+     / s11d_remedy / s11e_select
    - 旧全量线（s03b/s04/s07/s08/s09/s11/s11b）已归档到 `legacy/full_path/`
 
 3. **config/** - 模型端点配置
@@ -31,8 +31,9 @@ Rubric 生成能力建设：基于学术论文实现的评估标准(rubric)自�
 ### 仓库布局（2026-08-13 整理后）
 
 ```
-stages/      lean 主线 9 个脚本
-lib/         基础库 5 个（含 dimensions.py 通用维度词表）
+stages/      lean 主线 20 个 stage（命名规则见 README「命名规则」节）
+lib/         基础库 7 个：xlsx / llm / config / stage / dimensions / rubric / answer_check
+tests/       语义核心纯逻辑单测（零 LLM）：test_rubric.py / test_s04_flags.py
 legacy/      已归档，不参与交付，保留可运行状态（见 legacy/README.md）
   full_path/   旧全量线 9 个（含确定作废的 s09_normalize）
   phase3/      多模型聚合支线 4 个
@@ -45,7 +46,8 @@ docs/
 outputs/
   excel/     填充后的 xlsx 产出
   samples/   样例展示
-scripts/     辅助脚本 6 个；一次性/被取代的在 scripts/legacy/
+scripts/     辅助脚本 + 三个一键重跑（rerun_lean_fixed / rerun_phase4 / rerun_checkpoint2）；一次性脚本在 scripts/legacy/
+pyproject.toml 项目元数据（纯标准库，零依赖）；Makefile 常用入口（make check / seed / phase4 / checkpoint2 / export）
 tools/       watch.py；其余监控面板在 tools/legacy/
 ```
 
@@ -58,28 +60,28 @@ xlsx (input.xlsx)
   → s00_seed        → seed.jsonl + baseline.json
   → s01_filter      → s01_filter.jsonl
   → s02_context     → s02_context.jsonl          (intent + scenarios)
-  → s02_5_route     → s02_5_route.jsonl          (question_type + rubric_form + blocks)
+  → s02b_route     → s02b_route.jsonl          (question_type + rubric_form + blocks)
   → s03_perspective → s03_perspective_lean.jsonl (RP_RET=lean)
-  → s04L_rubric     → s04L_rubric.jsonl          (准则直出，含血缘 + 质量标记)
-  → s11L_diagnose   → s11L_diagnosed.jsonl       (RIFT 四失效模式)
-  → s11Lb_remedy    → s11Lb_remedied.jsonl + _defect_queue.jsonl
-  → s04Lb_split     → s04Lb_split.jsonl          (拆非原子 + 事实纠错 + 标记重写)
-  → s04Lc_severity  → s04Lc_severity.jsonl       (负项 severity + is_veto)
+  → s04_rubric     → s04_rubric.jsonl          (准则直出，含血缘 + 质量标记)
+  → s11_diagnose   → s11_diagnosed.jsonl       (RIFT 四失效模式)
+  → s11b_remedy    → s11b_remedied.jsonl + _defect_queue.jsonl
+  → s04b_split     → s04b_split.jsonl          (拆非原子 + 事实纠错 + 标记重写)
+  → s04c_severity  → s04c_severity.jsonl       (负项 severity + is_veto)
 ```
 
 Phase 4 实测线（`bash scripts/rerun_phase4.sh`，只跑 388 道双回复题）：
 
 ```
-s04Lc_severity.jsonl（452）
-  → 筛双回复      → s04Lc_phase4.jsonl          (388 题，硬约束 1)
-  → s10L_pool     → s10L_pool388.jsonl          (6 档 × 388 = 2328 回复)
-  → s12L_judge    → s12L_judged388.jsonl        (含 veto 两票 + 同源一致性修正)
-  → s11Lc_cons    → s11Lc_cons388.jsonl         (Hackable / LowSignal / floor)
-  → s11Ld_remedy ⇄ s12L 重判 ⇄ s11Lc 复诊       (×3 轮闭环，处置不收敛见下)
-  → s11Le_select  → s11Le_final.jsonl           (各轮实测里挑每题最优)
-  → s04Lc_severity（补分级）→ 合并 64 单回复题 → s11Le_all452.jsonl ← 交付源
-  → s12Lb_draft_judge → s12Lb_draft388.jsonl    (草稿 rubric 判分，检查点 2)
-  → s12Lc_pairwise   → s12Lc_pairwise.jsonl     (新 vs 草稿 pairwise，放行闸门)
+s04c_severity.jsonl（452）
+  → 筛双回复      → s04c_phase4.jsonl          (388 题，硬约束 1)
+  → s10_pool     → s10_pool388.jsonl          (6 档 × 388 = 2328 回复)
+  → s12_judge    → s12_judged388.jsonl        (含 veto 两票 + 同源一致性修正)
+  → s11c_cons    → s11c_cons388.jsonl         (Hackable / LowSignal / floor)
+  → s11d_remedy ⇄ s12_judge 重判 ⇄ s11c_consequential 复诊       (×3 轮闭环，处置不收敛见下)
+  → s11e_select  → s11e_final.jsonl           (各轮实测里挑每题最优)
+  → s04c_severity（补分级）→ 合并 64 单回复题 → s11e_all452.jsonl ← 交付源
+  → s12b_draft_judge → s12b_draft388.jsonl    (草稿 rubric 判分，检查点 2)
+  → s12c_pairwise   → s12c_pairwise.jsonl     (新 vs 草稿 pairwise，放行闸门)
   → export_advisor_schema.py
       → outputs/rubrics_advisor_lean.jsonl  交付档
       → outputs/rubrics_internal.jsonl      内部档（血缘/诊断/标记）
@@ -87,8 +89,8 @@ s04Lc_severity.jsonl（452）
       → outputs/excel/*.xlsx                交付档同源，C 列人读版
 ```
 
-**导出源必须是流水线末端**（跑过 Phase 4 = `s11Le_all452.jsonl`，
-没跑 = `s04Lc_severity.jsonl`）。指向中间步会
+**导出源必须是流水线末端**（跑过 Phase 4 = `s11e_all452.jsonl`，
+没跑 = `s04c_severity.jsonl`）。指向中间步会
 静默丢掉后续产出 —— 已经踩过两次（RIFT 诊断未生效、severity/veto 全空）。
 `export_advisor_schema.py --src` 默认值、`rerun_lean_fixed.sh`、
 `fill_xlsx_preserve_format.py` 的默认源都已对齐；`audit_rubrics.py` 把
@@ -117,7 +119,7 @@ RP_OUT=/path/to/output python3 stages/s00_seed.py
 - `data/seed.jsonl`: 453 条记录，每条含 rid、question、subject、draft_rubric、ref_responses
 - `data/baseline.json`: 草稿 rubric 的结构指标(维度数、准则数、满分分布、负向项统计)
 
-### Phase 1-4 (待实现)
+### Phase 1-4 (已实现)
 
 后续 phase 需要配置 `config/models.json`(见下文"模型端点配置")，详见 `docs/design/PLAN.md`。
 
@@ -193,7 +195,7 @@ python3 tools/watch.py --tokens # 展开 token 明细
 2. **判分器 ≠ 生成器**(步骤 12): 同系列模型有自偏好偏差，判分虚高
 3. **锚点集 ∉ 训练集**(步骤 14): 锚点集一旦参与训练就不再独立，失去参照作用
 4. **血缘标签必须在步骤 4 挂**: 用于回溯每条准则来自哪个 Scenario，后续诊断依赖此标签
-   —— s04L 挂在 `_criterion_id / _perspective_ids / _scenario_ids`，
+   —— s04_rubric 挂在 `_criterion_id / _perspective_ids / _scenario_ids`，
    只进 `outputs/rubrics_internal.jsonl`（`--full`），不进交付档
 5. ~~**闸门项不进 S_max 分母**(步骤 9)~~ —— **导师 2026-08-13 推翻**：
    score 直接当权重用，不在流水线内归一，归一化延后到判分阶段。
@@ -203,7 +205,7 @@ python3 tools/watch.py --tokens # 展开 token 明细
    **字段语义（导师 2026-08-14 复核后确认）**：`is_positive` 是正向/负向（方向），
    `is_gate` 是 0/1 阀门标记。内部 `data/*.jsonl` 与 `outputs/` 导出档口径一致，
    不存在语义分叉。语义的唯一实现在 `lib/rubric.py`，业务代码不许内联公式。
-6. **veto 是负项专属**（步骤 4Lc → 12）：`is_veto` 只能标在负向准则上
+6. **veto 是负项专属**（步骤 4c → 12）：`is_veto` 只能标在负向准则上
    （`lib/rubric.is_veto()` 强制这一条），与 `is_gate`（正向答案阀门）方向相反。
    聚合规则显式声明在 `lib/rubric.VETO_RULE`，交付档 / xlsx / 判分侧引用同一句：
    任一 `is_veto` 项成立 → 整题得分率 0，不进补偿式求和。
@@ -217,9 +219,9 @@ lean 主线已跑通 452 条全量（2026-08-13）：
 - ✅ Phase 0 数据层(s00_seed.py) + 基础库(xlsx.py, llm.py, dimensions.py, rubric.py)
 - ✅ Phase 1 试跑(20 条)：验证 RET 能导出多样视角
 - ✅ Phase 2 结构全量
-- ✅ 步骤 4L 准则直出(s04L_rubric.py)：全题预算制，5.4 条/题
-- ✅ 步骤 11L RIFT 免池诊断 + 11Lb 分级处置
-- ✅ 步骤 4Lb 拆分/重写 + 4Lc 负项分级与 veto 标记：452 题 3226 条，
+- ✅ 步骤 4 准则直出(s04_rubric.py)：全题预算制，5.4 条/题
+- ✅ 步骤 11 RIFT 免池诊断 + 11b 分级处置
+- ✅ 步骤 4b 拆分/重写 + 4c 负项分级与 veto 标记：452 题 3226 条，
      负项 614 条全带 severity，195 条 veto 覆盖 166 题（36.7%）
 - ✅ 交付导出(export_advisor_schema.py)：交付档 + 内部档双出，
      负项带 severity/is_veto；xlsx 与交付档同源
@@ -233,8 +235,8 @@ lean 主线已跑通 452 条全量（2026-08-13）：
   rubric 的 pairwise 一致率（见 `docs/reports/PHASE4_CHECKPOINT2.md`）。
   351 可测对：判别率 93.2% vs 草稿 77.2%（+16.0pp）、反转率 2.3% vs 2.8%，
   两条判据都过 → 新 rubric 可交付。判分侧证据链闭合。
-  复现：`bash scripts/rerun_checkpoint2.sh`（s12Lb_draft_judge.py 草稿判分
-  strong+weak，同判分器同 SYS 口径；s12Lc_pairwise.py 成对对比 + 放行判据）。
+  复现：`bash scripts/rerun_checkpoint2.sh`（s12b_draft_judge.py 草稿判分
+  strong+weak，同判分器同 SYS 口径；s12c_pairwise.py 成对对比 + 放行判据）。
   9 道新 rubric 劣于草稿的题全是 Phase 4 已登记残留族（floor/LowSignal/2-循环），
   进步骤 13 badcase 队列。
 
@@ -246,15 +248,15 @@ lean 主线已跑通 452 条全量（2026-08-13）：
 **2026-08-13 修复批次**（起因见下方「交付审查」）：
 
 1. **交付导出走错源**（根因，影响面最大）：`rerun_lean_fixed.sh` 的临时 heredoc
-   从 `data/s04L_rubric.jsonl`（**未经诊断**）导出，s11L/s11Lb 跑了但产出没进交付。
-   交付版 2452 条准则一条没过 RIFT。修复：改调 `export_advisor_schema.py --src data/s11Lb_remedied.jsonl`。
+   从 `data/s04_rubric.jsonl`（**未经诊断**）导出，s11_diagnose/s11b_remedy 跑了但产出没进交付。
+   交付版 2452 条准则一条没过 RIFT。修复：改调 `export_advisor_schema.py --src data/s11b_remedied.jsonl`。
 
 2. **RIFT non-atomic 过触发**：判 defective 1511/2452 = 61.6%，其中 non-atomic 1399 条（57%）。
    把「A 如何、B 如何」这类**对比类准则**误判为非原子——而题目问的就是区别，拆开即失去意义。
-   修复：`s11L_diagnose.py` 的 `SYS_ATOM` 改为单一判定原则（拆开后两半能否各自独立成立）
+   修复：`s11_diagnose.py` 的 `SYS_ATOM` 改为单一判定原则（拆开后两半能否各自独立成立）
    + 四类原子白名单（对比/排除/列举完备/判断带限定）。
 
-3. **处置策略错误**：旧 `s11Lb` 一律删除，导致 344/452 题因「删完不足 3 条」被静默跳过，
+3. **处置策略错误**：旧 `s11b_remedy` 一律删除，导致 344/452 题因「删完不足 3 条」被静默跳过，
    真删的 108 题里 **4 道 gated_answer 的答案项被删掉**（q0008 满分 12→3）。
    修复：按失效模式分级 —— subjective/ungrounded 删、non-atomic 落 `_defect_queue.jsonl` 待拆、
    **闸门项一律豁免**、删后不足则回滚并打 `needs_regen`。
@@ -262,50 +264,50 @@ lean 主线已跑通 452 条全量（2026-08-13）：
 4. **交付 schema 缺字段**：`rubric_form` / `is_gate` / `blocks` / 血缘全被
    `DELIVER_FIELDS` 过滤掉了（数据一直在上游，不用重跑）。修复：导出层重写，加 `--src` / `--full`。
 
-5. **程序化护栏**：prompt 管不住的用代码兜，`s04L_rubric.py` 的 `flag()` 打五类标记
+5. **程序化护栏**：prompt 管不住的用代码兜，`s04_rubric.py` 的 `flag()` 打五类标记
    （`_flag_vague` / `_no_groundtruth` / `_cliff` / `_mention_only` / `_subjective_threshold`），
-   只打标不删，交给 s04Lb 重写，避免全量重跑。
+   只打标不删，交给 s04b_split 重写，避免全量重跑。
 
 **2026-08-14 Phase 4 试点审计 + 测量工具修复**（详见 `docs/reports/AUDIT_48PILOT_PHASE4.md`）：
 
-48 题试点（s10L_pool48 → s12L_judged48 → s11Lc_cons48）逐题审计发现
+48 题试点（s10_pool48 → s12_judged48 → s11c_cons48）逐题审计发现
 24 个 Hackable 信号里 15 个是 pool 造法失效、6 个是判分错误、只有 3 个真缺陷。
 修复：
 1. `lib/answer_check.py`（新）：程序化答案核验共享模块。修 option 正则 `A.`
    永不命中的 bug（q0179 闸门清零根因）；短数字（≤2 位）改「结论标记上下文
    + 行尾标点」匹配，防 `2` 命中公式常数 `2π`；提供 `has_correct_answer()`
-   给 s10L 做对抗/弱档反向校验。
-2. `s10L_pool.py`：strong 退化用最强模型重生成（跳过 10→1）；adv/weak 生成后
+   给 s10_pool 做对抗/弱档反向校验。
+2. `s10_pool.py`：strong 退化用最强模型重生成（跳过 10→1）；adv/weak 生成后
    反向校验「结论 ≠ answer_canonical」，答对自动重试、仍答对标 `answer_correct`
    （诊断侧剔除）；cut 删量 <8% 自动重试；两趟执行保证 cut 基于最终 strong。
-3. `s12L_judge.py`：同源一致性护栏——trunc/cut 是 strong 字面子集，子集档 met
+3. `s12_judge.py`：同源一致性护栏——trunc/cut 是 strong 字面子集，子集档 met
    而 strong 未 met 在逻辑上不可能，以 strong 为准修正（记 `judge_fixed`）。
-4. `s11Lc_consequential.py`：gated 题 weak_mean 只用 weak+adv；trunc/cut 与
+4. `s11c_consequential.py`：gated 题 weak_mean 只用 weak+adv；trunc/cut 与
    strong 正向 met 集相同 → 构造失效剔除；gap 改 strong−weak 单档差；
    trunc/cut 平分降级为 `suspect_ties`（不计 defective）；floor 题抑制
    LowSignal/surface（处置方向相反）。
 复测：Hackable 24→10、LowSignal 18→11、跳过 10→1。残留 = 3 真缺陷（q0167/
-q0336/q0388）+ 7 弱档造法失败（canon 缺失无法程序化拦截，待 s11Ld 处置时
+q0336/q0388）+ 7 弱档造法失败（canon 缺失无法程序化拦截，待 s11d_remedy 处置时
 LLM 复核）+ 4 地板（q0149/q0377/q0408/q0440，处置方向=放松准则）。
 
-**2026-08-14 傍晚 s11Ld 处置闭环**：新建 `stages/s11Ld_remedy.py`（只对实测
+**2026-08-14 傍晚 s11d_remedy 处置闭环**：新建 `stages/s11d_remedy.py`（只对实测
 确认的缺陷动手：hackable→重写、floor→放松、pool 嫌疑→标记不重写、支持
 `RP_S11LD_ONLY` 白名单；正向分值守恒、血缘逐槽继承）。处置审计确认的 7 题并
-闭环复测（s11Ld → s12L 重判 → s11Lc 复诊）：**7/7 清零，floor=0**。
+闭环复测（s11d_remedy → s12_judge 重判 → s11c_consequential 复诊）：**7/7 清零，floor=0**。
 q0388 三轮收敛（过松→过严→适中）、q0377 两轮——LLM 重写会摆动，处置必须
 闭环复测才算完成。48 题终态：Hackable=7（全是 canon 缺失的弱档造法失败，
 已标 pool_suspect）、LowSignal=10（7 个同源 + 3 个阈值边缘）、跳过=1。
-Phase 4 全量前最后一个工具缺口：s10L 对 canon 缺失的 adv/weak 档加廉价
+Phase 4 全量前最后一个工具缺口：s10_pool 对 canon 缺失的 adv/weak 档加廉价
 LLM 复核（结论是否等于标准答案）。最终链：
-sample48 → s10L_pool48 → s12L_judged48 → s11Lc_cons48 → s11Ld_remedied48。
+sample48 → s10_pool48 → s12_judged48 → s11c_cons48 → s11d_remedied48。
 
 **2026-08-14 深夜 试点闭环（48 题 Hackable 24→0）**：
-- s10L 修复 F：canon 缺失的 adv/weak 档加 judge 模型相对复核（拿 strong 当
+- s10_pool 修复 F：canon 缺失的 adv/weak 档加 judge 模型相对复核（拿 strong 当
   参考答案，只比最终结论，宁放过不误杀），拦截 14 档「答对」造法失败。
   open 题不做「弱档不够弱」文本复核（文本质量≠rubric 得分，实测误杀）。
-- s12L SYS 第 4 条纪律：答案类准则只认**最终结论**——对抗档「过程全对、
+- s12_judge SYS 第 4 条纪律：答案类准则只认**最终结论**——对抗档「过程全对、
   最终答案写空集」曾拿 80% 与强档打平（q0301），复判后 80%→10%。
-- s11Lc 修复 E：gated 题收紧——对抗档过程全对是设计使然，过程级准则在
+- s11c_consequential 修复 E：gated 题收紧——对抗档过程全对是设计使然，过程级准则在
   adv/weak 的翻转降级待复核；gated 弱档追平=疑似答对（weak 对 gap 作废）；
   无有效弱档时 LowSignal 抑制。
 终态：Hackable=0、LowSignal=3（q0058/q0433 open 弱档不弱 + q0113 判分
@@ -316,11 +318,11 @@ sample48 → s10L_pool48 → s12L_judged48 → s11Lc_cons48 → s11Ld_remedied48
 1. `DELIVER_FIELDS` 加 `severity` / `is_veto`（走 `NEGATIVE_FIELDS`，只挂负项；
    `is_veto` 经 `lib/rubric.is_veto()` 过一遍，正向项标了也不认）。此前两个字段
    被白名单过滤，交付档里 severity 全 None、veto 0 条。
-2. `--src` 默认值 `s11Lb_remedied` → `s04Lc_severity`（流水线末端）；
-   `rerun_lean_fixed.sh` 补第 6 步 s04Lc、导出改 7/7。
+2. `--src` 默认值 `s11b_remedied` → `s04c_severity`（流水线末端）；
+   `rerun_lean_fixed.sh` 补第 6 步 s04c_severity、导出改 7/7。
 3. **白名单改规则**：内部档改带全部 `_` 前缀字段。白名单漏字段是静默的，
-   已漏过两批（第一批两个 `_flag_*`，第二批 s04Lb 的 `_rewritten_from` /
-   `_pending_split` / `_split_skipped` / `_factfix*` / `_needs_review` 加 s04Lc 的
+   已漏过两批（第一批两个 `_flag_*`，第二批 s04b_split 的 `_rewritten_from` /
+   `_pending_split` / `_split_skipped` / `_factfix*` / `_needs_review` 加 s04c_severity 的
    `_veto_block` / `_s04Lc_*`）。交付侧仍是严格白名单，所以放宽内部侧不影响口径。
 4. `fill_xlsx_preserve_format.py` 默认源 `data/s04b_core.jsonl`（legacy 全量线，
    既没过 RIFT 也没有 is_gate/severity）→ 交付档本身。xlsx 与 jsonl 必须同源。
@@ -332,38 +334,38 @@ sample48 → s10L_pool48 → s12L_judged48 → s11Lc_cons48 → s11Ld_remedied48
 带分级，195 条 veto 全 principle 级、门槛三项全 0；xlsx 只有 C 列变动（452 行）。
 
 **2026-08-17 Phase 4 全量跑通（388 双回复题）**：链路
-`s04Lc_phase4 → s10L_pool388 → s12L_judged388 → s11Lc_cons388 → s11Ld×3 轮闭环
-→ s11Le_final → 合并 64 单回复题 → 交付`，一键：`bash scripts/rerun_phase4.sh`。
+`s04c_phase4 → s10_pool388 → s12_judged388 → s11c_cons388 → s11d_remedy×3 轮闭环
+→ s11e_final → 合并 64 单回复题 → 交付`，一键：`bash scripts/rerun_phase4.sh`。
 
 实测终态：**无缺陷 257/388 (66.2%) → 284/388 (73.2%)**，无一题退步，`s_max` 全守恒。
 残留 LowSignal 42 / floor 13 / Hackable 7+6 / skip 32（测量受限）。
 
 四个测量工具缺陷，都是**只有放量才暴露**的（48 试点上不存在或被掩盖）：
 
-1. **mid 档序失效**（`s10L_pool.py` + `s11Lc`）：`SYS_MID` 只写「篇幅适中」，
+1. **mid 档序失效**（`s10_pool.py` + `s11c_consequential`）：`SYS_MID` 只写「篇幅适中」，
    pool_mid 把「不做深入展开」读成「答简短」——中位 244 字 < weak 的 395 字
    （两档还是不同模型，篇幅无跨档约束），**65% 的题 mid ≤ weak**。修：
    `SYS_MID` 改绝对下限 600 字 + 「每个要点都要给依据」，把「中等」锚在覆盖
-   深度而非篇幅；`s11Lc` 加档序护栏（mid ≤ weak/adv 即剔除）。
+   深度而非篇幅；`s11c_consequential` 加档序护栏（mid ≤ weak/adv 即剔除）。
    注：mid 只进 std 与 ceiling，不进 gap/Hackable，所以它**掩盖信号而非制造
    假信号** —— 剔除后 LowSignal 仍 61，ceiling 3→5。
-2. **strong 档答错**（`s11Lc`）：`strong_degenerate` 只查篇幅，查不出「答得长
+2. **strong 档答错**（`s11c_consequential`）：`strong_degenerate` 只查篇幅，查不出「答得长
    但答错」。22 道地板题里 5 道 strong 程序化核验就是错的（q0078/q0199/q0262/
    q0353/q0378），放松准则治不了。修：`answer_check` 进跳过逻辑，参照系坏了
    不给结论。跳过 18→32。
-3. **锚可达性门**（`s11Ld.anchor_reachable`，最关键）：rubric 本就是从参考回复
+3. **锚可达性门**（`s11d_remedy.anchor_reachable`，最关键）：rubric 本就是从参考回复
    推出来的，**锚能拿到分就说明准则可满足**，地板来自 pool 侧。实测 8 道复测
    后仍地板的题，**6 道锚拿到 42%~100%**（q0032 73% / q0047 80% / q0050 100% /
    q0235 50% / q0263 42% / q0443 100%），只有 q0020/q0279 是连锚都拿不到的真过严。
-   没这道门，那 6 道好用的 rubric 会被"放松"改坏。探针复用 `s12L.build` 的判分
+   没这道门，那 6 道好用的 rubric 会被"放松"改坏。探针复用 `s12.build` 的判分
    口径 —— 换口径测出来的分与地板判定不可比。
-4. **答偏题门**（`s11Ld.check_on_target`）：q0105 题目函数有缺项，strong 自行
+4. **答偏题门**（`s11d_remedy.check_on_target`）：q0105 题目函数有缺项，strong 自行
    补成 `sin(2πx)+x+1` 再作答。参照系偏了，rubric 不动。
 
 **处置不收敛，是 2-循环**（新结论，比试点的「会摆动」更强）：q0221 走出
 60%→0%→60%→0%，q0028/q0071 同型。「收紧」与「放松」是互逆操作，对这类题
 不存在两头都满足的中间档，再多跑几轮只是在两个坏状态间来回。故新增
-`stages/s11Le_select.py`：跑固定轮数（默认 3），再**在各轮实测证据里挑每题
+`stages/s11e_select.py`：跑固定轮数（默认 3），再**在各轮实测证据里挑每题
 最好的一版**（缺陷数少者优，同分取靠后轮次），残留照实记进 `_s11Le`。
 选择逻辑单调 —— 实测无一题从无缺陷退步。
 
@@ -377,8 +379,8 @@ sample48 → s10L_pool48 → s12L_judged48 → s11Lc_cons48 → s11Ld_remedied48
 - 29.6% 正项是「提及即得分」型；53/500 负项用「严重/显著」当阈值
 - 13 条负项写死某个具体错误答案（过拟合参考错误）
 - 根因之一：`s00_seed.py:50` 的 `ref_errors` 只存了 key 名，**错误内容被丢弃**，
-  而 `s04L` 却告诉模型「本题有 N 条错误可参考」→ 模型只能编。待 T1 修。
-- 遗留：`s04L_rubric.py` 的 prompt 正例 `"最终答案为7cm，与标准答案一致"`
+  而 `s04_rubric` 却告诉模型「本题有 N 条错误可参考」→ 模型只能编。待 T1 修。
+- 遗留：`s04_rubric.py` 的 prompt 正例 `"最终答案为7cm，与标准答案一致"`
   教会了模型「与标准答案一致」句式；正例 `"列出...64卦名称，无遗漏"` 教出了全量悬崖项。待 T1 修。
 
 ## Key Design Decisions

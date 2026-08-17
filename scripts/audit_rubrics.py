@@ -6,14 +6,14 @@
   python3 scripts/audit_rubrics.py outputs/rubrics_advisor_lean.jsonl
   python3 scripts/audit_rubrics.py 新.jsonl --base 旧.jsonl  # 两版对比
 
-替代 test_s04L_fixes.py（那个只查 3 类，且写死了「修复前=交付档」的比较对象）。
+替代 tests/test_s04_flags.py（那个只查 3 类，且写死了「修复前=交付档」的比较对象）。
 
 检查项分三类：
   结构   题数/准则数/维度分布/分数尺度/schema 完整性
   可判定 判分器能不能拿着这条准则独立给出一致的是否判定
   区分度 这条准则能不能把好回答和差回答分开
 
-判定用的正则直接从 stages/s04L_rubric.py 引，避免护栏和审计各写一套导致漂移。
+判定用的正则直接从 stages/s04_rubric.py 引，避免护栏和审计各写一套导致漂移。
 """
 import argparse
 import json
@@ -28,14 +28,14 @@ sys.path.insert(0, REPO)
 
 from lib import rubric
 
-# 复用 s04L 护栏的判定口径
+# 复用 s04_rubric 护栏的判定口径
 import importlib.util
 _spec = importlib.util.spec_from_file_location(
-    's04L', os.path.join(REPO, 'stages', 's04L_rubric.py'))
-_s04L = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_s04L)
-VAGUE, ANCHOR, REF_ONLY = _s04L.VAGUE, _s04L.ANCHOR, _s04L.REF_ONLY
-BULK, MENTION, SUBJ_DEG = _s04L.BULK, _s04L.MENTION, _s04L.SUBJ_DEG
+    's04L', os.path.join(REPO, 'stages', 's04_rubric.py'))
+_s04mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_s04mod)
+VAGUE, ANCHOR, REF_ONLY = _s04mod.VAGUE, _s04mod.ANCHOR, _s04mod.REF_ONLY
+BULK, MENTION, SUBJ_DEG = _s04mod.BULK, _s04mod.MENTION, _s04mod.SUBJ_DEG
 
 # 审计独有的判定（护栏里没有，因为这些不适合在生成期硬拦）
 NONATOMIC_HINT = re.compile(r'且|并且|同时')
@@ -85,8 +85,8 @@ def audit(path):
     n_gform = sum(1 for r in recs if r.get('rubric_form') == 'gated_answer')
     print(f'  is_gate      {n_gate} 条 / gated_answer {n_gform} 题')
     m['闸门丢失'] = max(0, n_gform - n_gate)
-    # 负项分级 + veto（s04Lc 起进交付档）。缺了判分侧执行不了合取门，
-    # 而缺失是静默的 —— 导出源指向 s04Lc 之前的步骤就会全空，所以计入指标对账。
+    # 负项分级 + veto（s04c_severity 起进交付档）。缺了判分侧执行不了合取门，
+    # 而缺失是静默的 —— 导出源指向 s04c_severity 之前的步骤就会全空，所以计入指标对账。
     n_sev = sum(1 for _, c in neg if c.get('severity'))
     sev = Counter(c.get('severity') for _, c in neg if c.get('severity'))
     print(f'  severity     {n_sev}/{len(neg)} 条负项  ' +
@@ -125,7 +125,7 @@ def audit(path):
         [(r, c) for r, c in allc if NONATOMIC_HINT.search(c['criteria'])],
         '启发式，以 RIFT 诊断为准')
     # veto 项的门槛比普通负项高一档：一票否决整题，判定线必须可一致执行。
-    # s04Lc 有代码兜底，这里独立复核一遍（导出层若换源、门槛若放松，这里会亮）。
+    # s04c_severity 有代码兜底，这里独立复核一遍（导出层若换源、门槛若放松，这里会亮）。
     veto_pairs = [(r, c) for r, c in allc if c.get('is_veto')]
     hit('veto 项非原子',
         [(r, c) for r, c in veto_pairs
@@ -154,7 +154,7 @@ def audit(path):
         '过拟合参考错误，答成别的就逃掉')
 
     # verifiable 答案项占比。
-    # 口径按 is_gate 而非 dimension=='答案准确性'：s04Lb 拆悬崖项时会把一条
+    # 口径按 is_gate 而非 dimension=='答案准确性'：s04b_split 拆悬崖项时会把一条
     # +8 拆成「规则对不对」+「条目全不全」，后者常落到「要点完整性」维度，
     # 但它仍是答案判据的一半。只认单一维度会把拆分误报成占比下降。
     ver = [r for r in recs if r.get('question_type') == 'verifiable' and r.get('full_mark')]

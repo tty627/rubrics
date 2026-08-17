@@ -21,8 +21,8 @@
 **verifiable 题要另造对抗档**：截断和删论点对数学题没意义，要造「答案错但过程
 看似完整」的回复 —— 这才是 gated_answer 真正要防的钻空子方式。
 
-**硬约束第 1 条**：待评回复 ≠ 锚定回复。强档只用 s05L 没用过的那条
-（s05L 已把 anchor_key 写进记录，这里排除它）。单回复题标 pool_shared。
+**硬约束第 1 条**：待评回复 ≠ 锚定回复。强档只用 s05_ground 没用过的那条
+（s05_ground 已把 anchor_key 写进记录，这里排除它）。单回复题标 pool_shared。
 
 档位设计（每题 6 条）：
     strong    现成强回复（排除锚）    —— 上界参照
@@ -44,14 +44,14 @@
   D. cut 删除量 <8% 自动重试一次（强化删除量指令）；仍不达标标 degraded。
   E. 两趟执行：mid/weak/adv/strong_regen 先跑，定稿 strong 后再造 cut——
      cut 必须基于最终 strong，退化题重生成后截断/删点才不会错位。
-  F. （2026-08-14 傍晚）canon 缺失时的 LLM 复核：s05L 没抽出 canonical
+  F. （2026-08-14 傍晚）canon 缺失时的 LLM 复核：s05_ground 没抽出 canonical
      答案的题（48 题里 11/16 道 gated），程序化反向核验无从下手。用 judge
      角色模型做**相对判定**——拿 strong 档当参考答案，只比较最终结论：
      - adv（verifiable 无 canon）：「对抗档的最终结论是否与强档一致/正确」
        → 一致则造法失败，重造一次，仍一致标 answer_correct；
      - weak（gated 无 canon）：「弱档是否把答案答对了」→ 同处理。
      open 题的弱档**不做**文本质量复核（文本完整 ≠ rubric 得分，实测误杀），
-     弱档质量由 s11Lc 的 gap 实测反映。
+     弱档质量由 s11c_consequential 的 gap 实测反映。
      把审计残留的 pool 型假 Hackable（q0045/q0238/q0242/q0301/q0445/q0448）
      在源头挡掉。
 """
@@ -62,8 +62,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage, answer_check
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
-SRC = os.environ.get('RP_S10L_SRC', 's04L_pilot.jsonl')
-OUT = os.environ.get('RP_S10L_OUT', 's10L_pool.jsonl')
+SRC = os.environ.get('RP_S10L_SRC', 's04_pilot.jsonl')
+OUT = os.environ.get('RP_S10L_OUT', 's10_pool.jsonl')
 TRUNC_RATIO = float(os.environ.get('RP_TRUNC', 0.4))
 # cut 档至少要删掉这么多，否则视为造法失效（实测模型常只删 1%-3%）
 MIN_CUT = float(os.environ.get('RP_MIN_CUT', 0.08))
@@ -336,7 +336,7 @@ def main():
         # 只对 gated/verifiable 且 canonical 缺失的题做「结论是否等于强档」复核。
         # open 题不做「弱档不够弱」复核：文本完整性 ≠ rubric 得分（实测 q0005
         # 弱档文本完整但判分仅 20%，文本复核会误杀）；open 题的弱档质量由
-        # s11Lc 的 gap 实测直接反映。
+        # s11c_consequential 的 gap 实测直接反映。
         strong_ref = strong_of(r)[1]
         if tier == 'adv' and ver and not canon_ok and txt:
             flag, _ = llm_check(SYS_CHECK_ADV, q, strong_ref, txt)

@@ -2,8 +2,8 @@
 """导出导师指定 schema 的 rubrics。
 
 用法：
-  python3 scripts/export_advisor_schema.py                        # 默认源 = s04Lc_severity
-  python3 scripts/export_advisor_schema.py --src data/s04L_rubric.jsonl
+  python3 scripts/export_advisor_schema.py                        # 默认源 = s04c_severity
+  python3 scripts/export_advisor_schema.py --src data/s04_rubric.jsonl
   python3 scripts/export_advisor_schema.py --full                 # 另出一份带血缘的内部档
 
 产出：
@@ -22,7 +22,7 @@
   is_gate      准则级。标出 gated_answer 题的答案项是哪一条
   blocks       multi_part 题的分块结构，44 条 hybrid 此前被拍平成单一清单
 
-负项两个字段（2026-08-14 补，源自 s04Lc_severity）：
+负项两个字段（2026-08-14 补，源自 s04c_severity）：
   severity     principle / major / minor —— 负向错误的严重性分级
   is_veto      true = 一票否决项。判分侧的聚合规则见 lib/rubric.VETO_RULE：
                「任一 is_veto 项被判定成立 → 整题得分率为 0，不进补偿式求和」
@@ -49,13 +49,13 @@ sys.path.insert(0, REPO)
 from lib import rubric
 
 DELIVER_FIELDS = ('criteria', 'score', 'reason', 'dimension', 'is_positive')
-# 负项专属交付字段（s04Lc 打的标）。只挂负向准则，正向项不带。
+# 负项专属交付字段（s04c_severity 打的标）。只挂负向准则，正向项不带。
 NEGATIVE_FIELDS = ('severity', 'is_veto')
 
 # 内部档带全部 `_` 前缀字段 —— 白名单改成规则（2026-08-14 二次修）。
 # 白名单漏字段是**静默的**：上游打了标，导出层不认识就直接丢，审计看不出来。
 # 已经漏过两批 —— _flag_subjective_threshold / _flag_topic_list（第一次），
-# s04Lb 的 _rewritten_from / _pending_split / _split_skipped / _factfix* /
+# s04b_split 的 _rewritten_from / _pending_split / _split_skipped / _factfix* /
 # _needs_review 与 s04Lc 的 _veto_block / _s04Lc_*（第二次）。
 # 内部档的定位就是"上游所有标记的全集"，用规则表达这件事，新增标记自动带上。
 # 交付档反过来仍是严格白名单（DELIVER_FIELDS + NEGATIVE_FIELDS + is_gate），
@@ -76,10 +76,10 @@ def build_record(r, full=False):
     if not pos:
         return None
 
-    # gated_answer 的答案项 = 正向里分值最高的那条（s04L 的分值规则给到 6-8 分）。
+    # gated_answer 的答案项 = 正向里分值最高的那条（s04_rubric 的分值规则给到 6-8 分）。
     # 要求 >=4 分且唯一：若答案项已被诊断删除，剩下全是 1 分支撑项，此时不该
     # 把某条支撑项冒充成闸门 —— 宁可不标，让下游看得出这题的闸门丢了。
-    # 闸门可能不止一条：s04Lb 会把「全部/每一个都对」式的悬崖项拆成
+    # 闸门可能不止一条：s04b_split 会把「全部/每一个都对」式的悬崖项拆成
     # 「规则对不对」+「条目全不全」两条各占一半分值（q0358 的 +8 → +4/+4）。
     # 拆完就没有唯一最高分了，但这两条合起来仍是这道题的答案判据，都该标 is_gate。
     # 判定口径 = lib/rubric 闸门规则：分值 >= 4 且 >= 满分的 30%（s_max 分母只算
@@ -174,7 +174,7 @@ def report(recs, src):
           f'（{q_veto / max(len(recs), 1) * 100:.1f}%）')
     print(f'    聚合规则  : {rubric.VETO_RULE}')
     if neg and not n_sev:
-        print('    ⚠️  负项一条分级都没有 —— 源文件应是 s04Lc_severity.jsonl，'
+        print('    ⚠️  负项一条分级都没有 —— 源文件应是 s04c_severity.jsonl，'
               '否则判分侧无法执行 veto')
     bad_veto = [c for c in allc if c.get('is_veto') and rubric.is_positive(c)]
     if bad_veto:
@@ -218,11 +218,11 @@ def report(recs, src):
 
 def main():
     ap = argparse.ArgumentParser()
-    # 默认源 = 流水线末端。链路：s04L → s11L 诊断 → s11Lb 处置 → s04Lb 拆分/重写
-    # → s04Lc 负项分级。默认值指向中间步会静默丢掉后续步骤的产出
+    # 默认源 = 流水线末端。链路：s04_rubric → s11_diagnose 诊断 → s11b_remedy 处置 → s04b_split 拆分/重写
+    # → s04c_severity 负项分级。默认值指向中间步会静默丢掉后续步骤的产出
     # （2026-08-13 交付档一条没过 RIFT、2026-08-14 severity/veto 全空，都是这个坑）。
-    ap.add_argument('--src', default=os.path.join(REPO, 'data', 's04Lc_severity.jsonl'),
-                    help='源 jsonl，默认 data/s04Lc_severity.jsonl（流水线末端：'
+    ap.add_argument('--src', default=os.path.join(REPO, 'data', 's04c_severity.jsonl'),
+                    help='源 jsonl，默认 data/s04c_severity.jsonl（流水线末端：'
                          '已过 RIFT 诊断处置 + 缺陷重写 + 负项分级）')
     ap.add_argument('--out', default=os.path.join(REPO, 'outputs', 'rubrics_advisor_lean.jsonl'))
     ap.add_argument('--full', action='store_true',
@@ -232,8 +232,8 @@ def main():
     src = a.src if os.path.isabs(a.src) else os.path.join(REPO, a.src)
     if not os.path.exists(src):
         sys.exit(f'缺少 {src}\n'
-                 f'lean 线请先跑 stages/s04L_rubric.py → s11L_diagnose.py → '
-                 f's11Lb_remedy.py → s04Lb_split.py → s04Lc_severity.py')
+                 f'lean 线请先跑 stages/s04_rubric.py → s11_diagnose.py → '
+                 f's11b_remedy.py → s04b_split.py → s04c_severity.py')
 
     with open(src, encoding='utf-8') as f:
         raw = [json.loads(l) for l in f if l.strip()]

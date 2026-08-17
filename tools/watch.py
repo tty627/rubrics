@@ -41,10 +41,10 @@ STALL = 90          # 超过这么久没有新缓存文件就算停滞
 PIPE = [
     ('s01',          's01_filter.py',       'RP_M_FILTER', None,                's01_filter.jsonl',             1),
     ('s02',          's02_context.py',      'RP_M_GEN',    's01_filter.jsonl',  's02_context.jsonl',            1),
-    ('s02_5',        's02_5_route.py',      'RP_M_ROUTE',  's02_context.jsonl', 's02_5_route.jsonl',            2),
-    ('s03_batch',    's03_perspective.py',  'RP_M_GEN',    's02_5_route.jsonl', 's03_perspective_batch.jsonl',    'ret:batch'),
-    ('s03_hybrid',   's03_perspective.py',  'RP_M_GEN',    's02_5_route.jsonl', 's03_perspective_hybrid.jsonl',   'ret:hybrid'),
-    ('s03_faithful', 's03_perspective.py',  'RP_M_GEN',    's02_5_route.jsonl', 's03_perspective_faithful.jsonl', 'ret:faithful'),
+    ('s02_5',        's02b_route.py',      'RP_M_ROUTE',  's02_context.jsonl', 's02b_route.jsonl',            2),
+    ('s03_batch',    's03_perspective.py',  'RP_M_GEN',    's02b_route.jsonl', 's03_perspective_batch.jsonl',    'ret:batch'),
+    ('s03_hybrid',   's03_perspective.py',  'RP_M_GEN',    's02b_route.jsonl', 's03_perspective_hybrid.jsonl',   'ret:hybrid'),
+    ('s03_faithful', 's03_perspective.py',  'RP_M_GEN',    's02b_route.jsonl', 's03_perspective_faithful.jsonl', 'ret:faithful'),
 ]
 
 VIEW = {'tokens': False}    # --tokens：展开 stage 明细与端点侧累计

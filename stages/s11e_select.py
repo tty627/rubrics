@@ -1,6 +1,6 @@
-"""步骤 11Le：多轮处置的终态选择 —— 每题挑实测最好的那个 rubric 版本。
+"""步骤 11e：多轮处置的终态选择 —— 每题挑实测最好的那个 rubric 版本。
 
-s11Ld 的 LLM 重写会**摆动**（48 试点已见，388 全量更明显）：
+s11d_remedy 的 LLM 重写会**摆动**（48 试点已见，388 全量更明显）：
   q0221  紧(60%,Hackable) → 松(0%,地板) → 紧(60%) → 松(0%)  —— 2-循环
   q0028  27% → 27% → 45%(Hackable) → 0%(地板)
 「收紧」与「放松」是互逆操作，对这些题不存在两头都满足的中间档，再多跑几轮
@@ -13,7 +13,7 @@ s11Ld 的 LLM 重写会**摆动**（48 试点已见，388 全量更明显）：
 残留缺陷照实记在 `_s11Le` 里，交给下游（pool 重造 / 人工复核）。
 
 输入: 各轮 s11Lc 诊断（RP_S11LE_ROUNDS，逗号分隔，先基线后各轮）
-输出: s11Le_final.jsonl
+输出: s11e_final.jsonl
 """
 import json, os, sys
 from collections import Counter
@@ -23,9 +23,9 @@ from lib import stage
 
 ROUNDS = [x.strip() for x in os.environ.get(
     'RP_S11LE_ROUNDS',
-    's11Lc_cons388.jsonl,s11Lc_r1.jsonl,'
-    's11Lc_r2.jsonl,s11Lc_r3.jsonl').split(',') if x.strip()]
-OUT = os.environ.get('RP_S11LE_OUT', 's11Le_final.jsonl')
+    's11c_cons388.jsonl,s11c_r1.jsonl,'
+    's11c_r2.jsonl,s11c_r3.jsonl').split(',') if x.strip()]
+OUT = os.environ.get('RP_S11LE_OUT', 's11e_final.jsonl')
 
 
 def flags(c):
@@ -62,7 +62,7 @@ def main():
         rounds.append((name, {r['rid']: r for r in recs}))
     if not rounds:
         raise SystemExit('没有可用的诊断轮次')
-    print(f'步骤 11Le 终态选择: {len(rounds)} 轮')
+    print(f'步骤 11e 终态选择: {len(rounds)} 轮')
     for name, d in rounds:
         print(f'  {name:28} {len(d)} 题')
 
@@ -82,7 +82,7 @@ def main():
         stat['|'.join(sorted(f)) or 'OK'] += 1
         moved[ROUNDS[best_i]] += 1
         rec = dict(best_r)
-        # s11Ld 的处置记录改挂 `_` 前缀：导出层按「`_` 前缀 = 内部字段」的规则
+        # s11d_remedy 的处置记录改挂 `_` 前缀：导出层按「`_` 前缀 = 内部字段」的规则
         # 决定进不进内部档，不带前缀就被静默丢掉（内部档里查不到某题为什么被改）
         if 's11Ld' in rec:
             rec['_s11Ld'] = rec.pop('s11Ld')
@@ -93,7 +93,7 @@ def main():
         res.append(rec)
     stage.write_jsonl(OUT, res)
 
-    print(f'\n=== 步骤 11Le 结果 ===')
+    print(f'\n=== 步骤 11e 结果 ===')
     print(f'  终态 {len(res)} 题，按残留缺陷:')
     for k, v in stat.most_common():
         print(f'    {k:12} {v}')

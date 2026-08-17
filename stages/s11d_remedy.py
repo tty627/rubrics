@@ -1,13 +1,13 @@
-"""步骤 11Ld：Consequential 缺陷处置 —— 对实测确认的真缺陷重写 rubric。
+"""步骤 11d：Consequential 缺陷处置 —— 对实测确认的真缺陷重写 rubric。
 
-消费 s11Lc 的 Consequential 诊断。**只对实测确认的缺陷动手**：
+消费 s11c_consequential 的 Consequential 诊断。**只对实测确认的缺陷动手**：
   - hackable（真缺陷）  → LLM 重写整份 rubric：提及型准则改成内容核对式，
                           缺深度梯度的补一条展开度要求；正向总分守恒。
   - floor（准则过严）    → LLM 放松：删掉锚定过细的精确数字/专有措辞，
                           一条准则只绑一个判断点；条数与分值不变。
   - pool 嫌疑            → 只标记不重写：gated/verifiable 题的 weak/对抗档
                           平分多是「弱档把答案答对了」的造法失败，而 canonical
-                          缺失时程序化核验无从下手——这是 s10L 的活，不在这步
+                          缺失时程序化核验无从下手——这是 s10_pool 的活，不在这步
                           拿 rubric 开刀（48 试点审计：q0045/q0238/q0242/q0301/
                           q0445/q0448/q0058 都属此类）。
   - low_signal 单独命中  → 只标记 needs_review（阈值边缘案例，如 q0133/q0314）。
@@ -16,22 +16,22 @@
   真缺陷 3 题 q0167/q0336/q0388 + 地板 4 题 q0149/q0377/q0408/q0440。
   复测方式：s11Ld 输出 → s12L 重判（RP_S12L_SRC 指向本步输出）→ s11Lc 复诊。
 
-输入: s11Lc_consequential.jsonl
-输出: s11Ld_remedied.jsonl（rubrics 已重写 + s11Ld 处置记录）
+输入: s11c_consequential.jsonl
+输出: s11d_remedied.jsonl（rubrics 已重写 + s11d_remedy 处置记录）
 """
 import json, os, re, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage, dimensions, rubric
-# 锚可达性探针要用 s12L 的判分口径（同一套 SYS + 同一套准则渲染），
-# 换口径测出来的分数与 s11Lc 的地板判定不可比。
-from stages import s12L_judge as s12L
+# 锚可达性探针要用 s12_judge 的判分口径（同一套 SYS + 同一套准则渲染），
+# 换口径测出来的分数与 s11c_consequential 的地板判定不可比。
+from stages import s12_judge as s12
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
 THINK = stage.envflag('RP_THINK', True)
-SRC = os.environ.get('RP_S11LD_SRC', 's11Lc_consequential.jsonl')
-OUT = os.environ.get('RP_S11LD_OUT', 's11Ld_remedied.jsonl')
+SRC = os.environ.get('RP_S11LD_SRC', 's11c_consequential.jsonl')
+OUT = os.environ.get('RP_S11LD_OUT', 's11d_remedied.jsonl')
 # 白名单（逗号分隔 rid）：只处置这些题。留空走默认启发式。
 ONLY = [x.strip() for x in os.environ.get('RP_S11LD_ONLY', '').split(',') if x.strip()]
 
@@ -197,12 +197,12 @@ def anchor_reachable(m, r):
 
 
 def judge_msgs(r, text, rubrics):
-    """复用 s12L 的判分口径 —— 换一套标准去测锚，结论就没有可比性。"""
-    return s12L.build(r, {'text': text}, rubrics)
+    """复用 s12_judge 的判分口径 —— 换一套标准去测锚，结论就没有可比性。"""
+    return s12.build(r, {'text': text}, rubrics)
 
 
 def judge_rate(obj, rubrics):
-    """把判分 JSON 折成 raw_rate（补偿式，与 s11Lc 同口径）。"""
+    """把判分 JSON 折成 raw_rate（补偿式，与 s11c_consequential 同口径）。"""
     if not isinstance(obj, dict):
         return None
     res = obj.get('results') or []
@@ -236,7 +236,7 @@ def check_on_target(m, r):
     """地板题前置门：strong 档是否在答同一件事。
 
     388 全量实测：22 道地板题里 5 道 strong 档答案程序化核验就是错的（已在
-    s11Lc 跳过），另有 q0047（问相空间刘维尔定理，答的是复分析那个）、q0071
+    s11c_consequential 跳过），另有 q0047（问相空间刘维尔定理，答的是复分析那个）、q0071
     （题给两对互补基因的分离比，答成单基因+抑制基因）这类**答偏题**的。
     参照系本身偏了，放松准则只会把 rubric 改坏 —— 不重写，标记出来。
     返回 (on_target: bool, why: str)。判不出来时按 True 放过（宁放过不误杀）。
@@ -333,14 +333,14 @@ def apply(r, obj, action):
                     'reason': s['reason'], 'dimension': s['dimension'],
                     'is_positive': s['is_positive'],
                     '_dim_from_table': s.get('_dim_from_table', False),
-                    '_s11Ld_rewritten': True})
+                    '_s11d_rewritten': True})
     return out, ''
 
 
 def main():
     m = stage.pick('RP_M_S11LD', 'generator')
     recs = stage.read_jsonl(SRC)
-    print(f'步骤 11Ld Consequential 处置: {len(recs)} 题, 源={SRC}')
+    print(f'步骤 11d Consequential 处置: {len(recs)} 题, 源={SRC}')
     print(f'  重写模型={m.name}  白名单={"(" + ",".join(ONLY) + ")" if ONLY else "默认启发式"}')
 
     jobs, by_rid = [], {r['rid']: r for r in recs}
@@ -415,7 +415,7 @@ def main():
             res.append({**r, 's11Ld': rec})
     stage.write_jsonl(OUT, res)
 
-    print(f'\n=== 步骤 11Ld 结果 ===')
+    print(f'\n=== 步骤 11d 结果 ===')
     if errs:
         print(f'  LLM 失败    : {len(errs)} 题')
     print(f'  重写成功    : {n_ok}/{len(jobs)} 题')

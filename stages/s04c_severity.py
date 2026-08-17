@@ -1,9 +1,9 @@
-"""步骤 4Lc：负项严重性分级 + veto 标记 —— 补偿式总分上的合取门。
+"""步骤 4c：负项严重性分级 + veto 标记 —— 补偿式总分上的合取门。
 
-流程位置：s04Lb_split 之后、判分（s12L）之前。消费交付源 data/s04Lb_split.jsonl，
+流程位置：s04b_split 之后、判分（s12_judge）之前。消费交付源 data/s04b_split.jsonl，
 给每条负向扣分项打 severity ∈ {principle, major, minor} 与 is_veto（bool），
-输出 data/s04Lc_severity.jsonl。48 题试点链（s10L_pool48）消费的正是
-s04Lb_split，这一步跑一遍，交付档与 Phase C 验收链同时覆盖。
+输出 data/s04c_severity.jsonl。48 题试点链（s10_pool48）消费的正是
+s04b_split，这一步跑一遍，交付档与 Phase C 验收链同时覆盖。
 
 **为什么单独一步**（2026-08-14，导师反馈「负向扣分不够，触犯原则性错误的
 回答仍拿高分」）：
@@ -21,8 +21,8 @@ s04Lb_split，这一步跑一遍，交付档与 Phase C 验收链同时覆盖。
 **veto 门槛（prompt 写清楚 + 代码兜底）**：
   1. 原子：单一错误，不含「且/或」串接（VETO_ATOMIC_BREAK 兜底）
   2. 判据是「触犯即整题不合格」，不是「扣分较多」→ 只有 principle 级可 veto
-  3. 判定线清晰：复用 s04L_rubric 的 SUBJ_DEG/ANCHOR，主观程度词不给 veto
-  4. gated_answer 的「答案答错」是天然 veto 候选（s12L 有 lib/answer_check.py
+  3. 判定线清晰：复用 s04_rubric 的 SUBJ_DEG/ANCHOR，主观程度词不给 veto
+  4. gated_answer 的「答案答错」是天然 veto 候选（s12_judge 有 lib/answer_check.py
      程序化核验兜底，可靠性最高）
   代码只做**否决**（拦下 LLM 给的 veto），不做**追加**（不替 LLM 新造 veto）。
 
@@ -33,12 +33,12 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage, rubric
-from stages.s04L_rubric import SUBJ_DEG, ANCHOR
+from stages.s04_rubric import SUBJ_DEG, ANCHOR
 
 WORKERS = int(os.environ.get('RP_WORKERS', 14))
 THINK = stage.envflag('RP_THINK', True)
-SRC = os.environ.get('RP_S04LC_SRC', 's04Lb_split.jsonl')
-OUT = os.environ.get('RP_S04LC_OUT', 's04Lc_severity.jsonl')
+SRC = os.environ.get('RP_S04LC_SRC', 's04b_split.jsonl')
+OUT = os.environ.get('RP_S04LC_OUT', 's04c_severity.jsonl')
 
 # 原子性兜底：串接多个错误的连接词（RIFT non-atomic 的「且」口径 + 「或」）。
 # 一条里捆了多个独立错误，判分器无法对整条给出一致的成立/不成立，不能当 0/1 闸门。
@@ -136,7 +136,7 @@ def main():
             if not rubric.is_positive(c):
                 jobs.append((i, j))
 
-    print(f'步骤 4Lc 负项严重性分级: {len(recs)} 题, 源={SRC}')
+    print(f'步骤 4c 负项严重性分级: {len(recs)} 题, 源={SRC}')
     print(f'  分级模型={m.name} (family={m.family})')
     print(f'  负向准则: {len(jobs)} 条')
 
@@ -195,7 +195,7 @@ def main():
             f.write(json.dumps(out, ensure_ascii=False) + '\n')
     print(f'写出 {out_path}')
 
-    print(f'\n=== 步骤 4Lc 结果 ===')
+    print(f'\n=== 步骤 4c 结果 ===')
     print(f'  严重性分布 : ' + '  '.join(f'{k}={sev_stat[k]}' for k in rubric.SEVERITY_LEVELS))
     print(f'  is_veto    : {len(veto_out)} 条')
     if block_stat:

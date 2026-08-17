@@ -17,12 +17,12 @@ echo "=== Phase 4 检查点 2：新 rubric vs 草稿 rubric ==="
 echo "判分=$RP_M_JUDGE  并发=$RP_WORKERS"
 echo
 
-echo "[1/2] 草稿 rubric 判分（strong+weak，s12L 同口径）..."
-RP_S12LB_SRC=s10L_pool388.jsonl RP_S12LB_OUT=s12Lb_draft388.jsonl \
-  python3 stages/s12Lb_draft_judge.py
+echo "[1/2] 草稿 rubric 判分（strong+weak，s12_judge 同口径）..."
+RP_S12LB_SRC=s10_pool388.jsonl RP_S12LB_OUT=s12b_draft388.jsonl \
+  python3 stages/s12b_draft_judge.py
 echo
 
 echo "[2/2] pairwise 一致率对比 + 放行判据..."
-RP_S12LC_OUT=s12Lc_pairwise.jsonl python3 stages/s12Lc_pairwise.py
+RP_S12LC_OUT=s12c_pairwise.jsonl python3 stages/s12c_pairwise.py
 echo
-echo "✅ 检查点 2 跑完。逐题明细: data/s12Lc_pairwise.jsonl"
+echo "✅ 检查点 2 跑完。逐题明细: data/s12c_pairwise.jsonl"

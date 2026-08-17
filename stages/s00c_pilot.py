@@ -2,7 +2,7 @@
 
 与 s00b_sample.py 的区别：
   s00b 从 seed.jsonl 抽（跑流程之前），按草稿的 open/closed 分层；
-  本脚本从 s02_5_route.jsonl 抽（题型路由之后），按 **rubric_form 三态**分层。
+  本脚本从 s02b_route.jsonl 抽（题型路由之后），按 **rubric_form 三态**分层。
 
 为什么按 rubric_form 分：验证链（步骤 10-13）对三种形态的处理完全不同 ——
   gated_answer 要验程序化核验 + 对抗档（答案错但过程完整）能不能钻空子；
@@ -24,14 +24,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
 N = int(os.environ.get('RP_N', 10))
-SRC = os.environ.get('RP_PILOT_SRC', 's02_5_route.jsonl')
+SRC = os.environ.get('RP_PILOT_SRC', 's02b_route.jsonl')
 OUT = os.environ.get('RP_PILOT_OUT', 'seed_pilot.jsonl')
 # 必须入选的 rid，逗号分隔
 MUST = [x.strip() for x in os.environ.get('RP_PILOT_MUST', 'q0303').split(',') if x.strip()]
 # 形态配额：gated 验程序化核验、analytic 验区分度、multi_part 验分块
 QUOTA = {'gated_answer': 4, 'analytic': 4, 'multi_part': 2}
 # 已诊断出事实错误的题（可选，用于确保验证链能抓到已知问题）
-DIAG = os.environ.get('RP_PILOT_DIAG', 's11L_diagnosed.jsonl')
+DIAG = os.environ.get('RP_PILOT_DIAG', 's11_diagnosed.jsonl')
 
 
 def is_short(q):

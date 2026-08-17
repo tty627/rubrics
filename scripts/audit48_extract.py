@@ -1,7 +1,7 @@
-"""48 试点审计抽取：把 s11Lc_cons48 的判分与诊断材料按题导出成可读档案。
+"""48 试点审计抽取：把 s11c_cons48 的判分与诊断材料按题导出成可读档案。
 
 用法:
-  RP_AUDIT_SRC=data/s11Lc_cons48.jsonl RP_AUDIT_OUT=data/_audit48 python3 scripts/audit48_extract.py
+  RP_AUDIT_SRC=data/s11c_cons48.jsonl RP_AUDIT_OUT=data/_audit48 python3 scripts/audit48_extract.py
 
 产出:
   data/_audit48/index.md         全 48 题一览（档次得分率 + 诊断标记）
@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-SRC = os.environ.get('RP_AUDIT_SRC', 'data/s11Lc_cons48.jsonl')
+SRC = os.environ.get('RP_AUDIT_SRC', 'data/s11c_cons48.jsonl')
 OUT = Path(os.environ.get('RP_AUDIT_OUT', 'data/_audit48'))
 
 TIER_CN = {'strong': '强档', 'mid': '中档', 'trunc': '截断档', 'cut': '删点档',
