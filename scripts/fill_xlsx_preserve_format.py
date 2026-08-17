@@ -7,26 +7,38 @@ import zipfile
 import json
 import shutil
 import os
+import sys
 from xml.etree import ElementTree as ET
-import html
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+from lib import rubric
+
+SEV_LABEL = {'principle': '原则性', 'major': '较严重', 'minor': '轻微'}
+
 
 def format_rubric(rubrics, full_mark):
     """格式化为导师指定 schema 的可读文本。
 
-    rubrics 是 s04b 核心筛选后的列表，每条含
-    criteria / score / reason / dimension / is_positive。
+    rubrics 每条含 criteria / score / reason / dimension / is_positive；
+    负项另带 severity / is_veto（s04Lc 起）。
     正向准则按 score 从高到低排，负向准则统一列在末尾。
+    闸门项标 ⭐（gated_answer 的答案判据），veto 项标 🚫 并在末尾声明聚合规则 ——
+    xlsx 是人看的那份交付，一票否决的规则不能只藏在 jsonl 字段里。
     """
     pos = [c for c in rubrics if c.get('is_positive')]
     neg = [c for c in rubrics if not c.get('is_positive')]
     pos.sort(key=lambda c: -c.get('score', 0))
+    vetoes = [c for c in neg if c.get('is_veto')]
 
     lines = [f"【满分 {full_mark} 分】共 {len(pos)} 条评分点"
-             + (f" + {len(neg)} 条扣分项" if neg else "")]
+             + (f" + {len(neg)} 条扣分项" if neg else "")
+             + (f"（其中 {len(vetoes)} 条一票否决）" if vetoes else "")]
 
     for i, c in enumerate(pos, 1):
         lines.append("")
-        lines.append(f"{i}. [{c.get('dimension', '')}] {c.get('score', 0)} 分")
+        gate = ' ⭐答案判据' if c.get('is_gate') else ''
+        lines.append(f"{i}. [{c.get('dimension', '')}] {c.get('score', 0)} 分{gate}")
         lines.append(f"   {c.get('criteria', '')}")
         if c.get('reason'):
             lines.append(f"   （{c['reason']}）")
@@ -36,10 +48,19 @@ def format_rubric(rubrics, full_mark):
         lines.append("─── 扣分项 ───")
         for i, c in enumerate(neg, 1):
             lines.append("")
-            lines.append(f"{i}. [{c.get('dimension', '')}] {c.get('score', 0)} 分")
+            sev = SEV_LABEL.get(c.get('severity'), '')
+            tag = f" [{sev}]" if sev else ''
+            if c.get('is_veto'):
+                tag += ' 🚫一票否决'
+            lines.append(f"{i}. [{c.get('dimension', '')}] "
+                         f"{c.get('score', 0)} 分{tag}")
             lines.append(f"   {c.get('criteria', '')}")
             if c.get('reason'):
                 lines.append(f"   （{c['reason']}）")
+
+    if vetoes:
+        lines.append("")
+        lines.append(f"※ 🚫 项的判分规则：{rubric.VETO_RULE}")
 
     return '\n'.join(lines)
 
@@ -56,28 +77,39 @@ def main():
     print("正在复制原始文件...")
     shutil.copy(original_file, output_file)
 
-    # 读取 rubric 数据。默认用 s04b 核心筛选后的结果（导师 schema）；
-    # 设 RP_FILL_SRC 可切回其他步骤的产出。
-    src_name = os.environ.get('RP_FILL_SRC', 's04b_core.jsonl')
-    src_path = os.path.join(repo_root, 'data', src_name)
+    # 读取 rubric 数据。默认 = 交付档 outputs/rubrics_advisor_lean.jsonl —— xlsx
+    # 和 jsonl 必须是同一份交付内容，各读一个源迟早对不上。
+    # （2026-08-14 修：原默认 data/s04b_core.jsonl 是 legacy 全量线的产出，
+    #  既没过 RIFT 处置也没有 is_gate / severity / is_veto。）
+    # 设 RP_FILL_SRC 可指向别的 jsonl（相对仓库根，或绝对路径）。
+    src_name = os.environ.get('RP_FILL_SRC',
+                              'outputs/rubrics_advisor_lean.jsonl')
+    src_path = (src_name if os.path.isabs(src_name)
+                else os.path.join(repo_root, src_name))
     if not os.path.exists(src_path):
-        raise SystemExit(f'缺少 data/{src_name}，先跑对应 stage')
+        raise SystemExit(f'缺少 {src_path}\n'
+                         f'先跑 scripts/export_advisor_schema.py 出交付档')
 
     print(f"正在读取 rubric 数据（源: {src_name}）...")
     rubrics_by_row = {}
     with open(src_path, encoding='utf-8') as f:
         for line in f:
+            if not line.strip():
+                continue
             rec = json.loads(line)
             xlsx_row = rec.get('xlsx_row')
             rubrics = rec.get('rubrics') or []
             if xlsx_row and rubrics:
-                pos = [c for c in rubrics if c.get('is_positive')]
                 rubrics_by_row[xlsx_row] = {
                     'rubrics': rubrics,
-                    'full_mark': sum(c.get('score', 0) for c in pos),
+                    # 满分口径走 lib/rubric（sum(正向 score)），不再内联
+                    'full_mark': rec.get('full_mark') or rubric.s_max(rubrics),
                 }
 
-    print(f"共读取 {len(rubrics_by_row)} 条数据")
+    n_veto = sum(1 for d in rubrics_by_row.values()
+                 for c in d['rubrics'] if c.get('is_veto'))
+    print(f"共读取 {len(rubrics_by_row)} 条数据"
+          f"（{n_veto} 条一票否决项将在扣分项里标出）")
 
     # 修改 xlsx 中的 XML
     print("正在修改 xlsx 文件...")

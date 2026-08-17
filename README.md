@@ -55,7 +55,7 @@ cat docs/advisor/generated_rubrics_samples.md      # 3 个完整案例
 
 ## 交付 schema
 
-每行一题。准则级字段是导师给定的五项，加两个下游判分要用的标记：
+每行一题。准则级字段是导师给定的五项，加下游判分要用的标记（`is_gate` 全带，`severity` / `is_veto` 只挂负项）：
 
 ```json
 {
@@ -72,13 +72,15 @@ cat docs/advisor/generated_rubrics_samples.md      # 3 个完整案例
      "is_positive": true, "is_gate": true},
     {"criteria": "选用的偶联前体类型不属于常规交叉偶联反应的标配组合",
      "score": -2, "reason": "...", "dimension": "知识正确性",
-     "is_positive": false, "is_gate": false}
+     "is_positive": false, "is_gate": false,
+     "severity": "major", "is_veto": false}
   ]
 }
 ```
 
 - `score` 是原始整数权重，不在流水线内归一（正向 1-3，verifiable 的答案项 6-8；负向 -2/-3）。`full_mark = sum(正向 score)`，跨题可比性靠判分阶段算得分率解决。
 - `is_gate` 标出 gated_answer 题的答案项是哪一条。它仍计入 `full_mark` 分母，0/1 语义由判分侧处理。
+- `severity`（`principle` 466 / `major` 146 / `minor` 2）与 `is_veto`（195 条，覆盖 166 题）只挂负向准则。veto 是补偿式总分上的合取门，聚合规则显式声明在 `lib/rubric.VETO_RULE`：**任一 `is_veto` 项被判定成立 → 整题得分率为 0，不进补偿式求和**。veto 项本身不进 `full_mark` 分母，归零由判分侧执行（`s12L_judge` 走两票制：第二个异源模型复判确认才生效）。
 - `multi_part` 题额外带 `blocks`（121 题），保留子题结构。
 - 血缘标签（`_criterion_id` / `_perspective_ids` / `_scenario_ids`）、RIFT 诊断结果、质量标记只进 `outputs/rubrics_internal.jsonl`（`--full`），不进交付档。
 
@@ -95,6 +97,7 @@ data/input.xlsx
   ↓ s11L_diagnose     RIFT 四检测器 → 760/2452 defective (31.0%)
   ↓ s11Lb_remedy      分级处置：删 147 条，561 条落 _defect_queue.jsonl 待重写
   ↓ s04Lb_split       消费队列：拆非原子 + 事实纠错 + 标记重写 → 2500 条
+  ↓ s04Lc_severity    负项分级（614 条）+ veto 标记（195 条）→ 交付源
   ↓ export_advisor_schema.py
       outputs/rubrics_advisor_lean.jsonl   交付档
       outputs/rubrics_internal.jsonl       内部档（血缘 / 诊断 / 标记）
@@ -104,7 +107,7 @@ data/input.xlsx
 
 `s02_5_route` 少一条（q0222）是该条调用失败被 `stage.run` 丢弃，不是过滤判弃用。重跑该步可补回。
 
-注意：`scripts/rerun_lean_fixed.sh` 第 5 步当前仍从 `data/s11Lb_remedied.jsonl` 导出，而现有交付档是从 `data/s04Lb_split.jsonl` 导出的（含 s04Lb 的拆分与纠错）。脚本里那处 TODO 尚未接线，重跑前需手动指定 `--src`。
+导出源必须是流水线末端（当前 `data/s04Lc_severity.jsonl`）。`export_advisor_schema.py` 的 `--src` 默认值与 `scripts/rerun_lean_fixed.sh` 已对齐到这一步 —— 指向中间步会静默丢掉后续产出，这个坑踩过两次（RIFT 诊断未生效、`severity`/`is_veto` 全空）。`scripts/audit_rubrics.py` 现在把「负项缺 severity」计入指标，换错源会在审计里亮出来。
 
 ## 题型路由
 
