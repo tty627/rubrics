@@ -78,6 +78,8 @@ s04Lc_severity.jsonl（452）
   → s11Ld_remedy ⇄ s12L 重判 ⇄ s11Lc 复诊       (×3 轮闭环，处置不收敛见下)
   → s11Le_select  → s11Le_final.jsonl           (各轮实测里挑每题最优)
   → s04Lc_severity（补分级）→ 合并 64 单回复题 → s11Le_all452.jsonl ← 交付源
+  → s12Lb_draft_judge → s12Lb_draft388.jsonl    (草稿 rubric 判分，检查点 2)
+  → s12Lc_pairwise   → s12Lc_pairwise.jsonl     (新 vs 草稿 pairwise，放行闸门)
   → export_advisor_schema.py
       → outputs/rubrics_advisor_lean.jsonl  交付档
       → outputs/rubrics_internal.jsonl      内部档（血缘/诊断/标记）
@@ -227,9 +229,16 @@ lean 主线已跑通 452 条全量（2026-08-13）：
 
 归档但未废：`legacy/phase3/` 多模型聚合、`legacy/phase4/` grounding + 锚点集。
 
+✅ **PLAN.md Phase 4 检查点 2（放行闸门，2026-08-17 通过）**：新 rubric 与草稿
+  rubric 的 pairwise 一致率（见 `docs/reports/PHASE4_CHECKPOINT2.md`）。
+  351 可测对：判别率 93.2% vs 草稿 77.2%（+16.0pp）、反转率 2.3% vs 2.8%，
+  两条判据都过 → 新 rubric 可交付。判分侧证据链闭合。
+  复现：`bash scripts/rerun_checkpoint2.sh`（s12Lb_draft_judge.py 草稿判分
+  strong+weak，同判分器同 SYS 口径；s12Lc_pairwise.py 成对对比 + 放行判据）。
+  9 道新 rubric 劣于草稿的题全是 Phase 4 已登记残留族（floor/LowSignal/2-循环），
+  进步骤 13 badcase 队列。
+
 待实现：
-- **PLAN.md Phase 4 检查点 2**（放行闸门，尚未做）：新 rubric 与草稿 rubric 的
-  成对一致性 —— 判分侧证据齐了，这一步才是「能不能交」的判据
 - 步骤 13 badcase 聚合、步骤 14 回流
 - 已知未修：cut 档 20.9% 造法失效（LLM 删段不可靠，要改程序化删段）；
   64 道单回复题按硬约束 1 无法进 Phase 4，缺实测证据
