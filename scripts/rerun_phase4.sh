@@ -15,9 +15,23 @@ set -e
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
-: "${RP_M_JUDGE:=cn-judge}"      # 判分器，family 必须 ≠ 生成器（硬约束 2）
-: "${RP_M_VETO:=cn-veto}"        # veto 第二票，family 必须 ≠ 判分器与生成器
-: "${RP_M_S11LD:=cn-gen}"        # 处置重写
+# 模型默认：候选名不在本机 config 里就回退角色默认（开发机=deepseek/glm-ac）
+cfg_has() { python3 - "$1" <<'PYEOF'
+import json, sys
+cfg = json.load(open('config/models.json', encoding='utf-8'))
+print('1' if any(m.get('name') == sys.argv[1] for m in cfg) else '0')
+PYEOF
+}
+set_default() {
+  if [ -z "${!1}" ] && [ "$(cfg_has "$2")" = "1" ]; then
+    export "$1=$2"
+  fi
+}
+set_default RP_M_JUDGE cn-judge  # 判分器，family 必须 ≠ 生成器（硬约束 2）
+set_default RP_M_VETO cn-veto    # veto 第二票，family 必须 ≠ 判分器与生成器；
+                                 # 本机无 cn-veto 时留空，s12 自动挑第三 family
+                                 # （都没有则明确报错：需补第三 family 端点）
+set_default RP_M_S11LD cn-gen    # 处置重写
 : "${RP_WORKERS:=6}"
 : "${RP_ROUNDS:=3}"              # 处置轮数
 export RP_M_JUDGE RP_M_VETO RP_M_S11LD RP_WORKERS

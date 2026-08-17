@@ -9,7 +9,16 @@ set -e
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
-: "${RP_M_JUDGE:=cn-judge}"     # 判分器（草稿判分，与新 rubric 判分同模型口径）
+# 判分器：候选 cn-judge 不在本机 config 里就回退角色默认（开发机=deepseek，同模型）
+cfg_has() { python3 - "$1" <<'PYEOF'
+import json, sys
+cfg = json.load(open('config/models.json', encoding='utf-8'))
+print('1' if any(m.get('name') == sys.argv[1] for m in cfg) else '0')
+PYEOF
+}
+if [ -z "${RP_M_JUDGE:-}" ] && [ "$(cfg_has cn-judge)" = "1" ]; then
+    export RP_M_JUDGE=cn-judge
+fi
 : "${RP_WORKERS:=8}"
 export RP_M_JUDGE RP_WORKERS
 

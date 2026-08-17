@@ -16,17 +16,32 @@ set -e
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
-# ---- 安全默认（by-judge 端点 2026-08-17 起持续 401，判分相关全部固定 cn-*）----
-: "${RP_M_GEN:=glm-ac}"
-: "${RP_M_FILTER:=glm-ac}"
-: "${RP_M_ROUTE:=glm-ac}"
-: "${RP_M_S04LC:=cn-judge}"
-: "${RP_M_JUDGE:=cn-judge}"
-: "${RP_M_VETO:=cn-veto}"
-: "${RP_M_S11LD:=cn-gen}"
-: "${RP_M_POOL_CHECK:=cn-judge}"
-export RP_M_GEN RP_M_FILTER RP_M_ROUTE RP_M_S04LC RP_M_JUDGE RP_M_VETO \
-       RP_M_S11LD RP_M_POOL_CHECK
+# ---- 模型默认（候选名不存在于本机 config/models.json 时自动回退角色默认；
+#      判分器/veto 必须异源，各步启动时校验）----
+cfg_has() { python3 - "$1" <<'PYEOF'
+import json, sys
+cfg = json.load(open('config/models.json', encoding='utf-8'))
+print('1' if any(m.get('name') == sys.argv[1] for m in cfg) else '0')
+PYEOF
+}
+set_default() {  # $1=环境变量名  $2=候选模型名
+  if [ -z "${!1}" ] && [ "$(cfg_has "$2")" = "1" ]; then
+    export "$1=$2"
+  fi
+}
+set_default RP_M_GEN glm-ac
+set_default RP_M_FILTER glm-ac
+set_default RP_M_ROUTE glm-ac
+set_default RP_M_S04LC cn-judge      # 开发机无 → 角色默认（deepseek，与 cn-judge 同模型）
+set_default RP_M_JUDGE cn-judge
+set_default RP_M_VETO cn-veto        # 开发机无 → 不设，s12 自动挑第三 family
+set_default RP_M_S11LD cn-gen        # 开发机无 → 角色默认（glm-ac）
+set_default RP_M_POOL_CHECK cn-judge
+set_default RP_M_POOL_MID glm-ad     # 开发机有；本机无 → by-pool-mid（原口径）
+set_default RP_M_POOL_WEAK glm-ad    # 同上
+set_default RP_M_POOL_STRONG glm-ac
+export RP_M_GEN RP_M_FILTER RP_M_ROUTE RP_M_S04LC RP_M_JUDGE RP_M_S11LD \
+       RP_M_POOL_CHECK RP_M_POOL_MID RP_M_POOL_WEAK RP_M_POOL_STRONG
 
 T0=$(date +%s)
 echo "=== rubrics 一键全流程 ==="

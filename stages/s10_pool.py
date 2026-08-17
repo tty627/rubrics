@@ -62,7 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage, answer_check
 
 WORKERS = int(os.environ.get('RP_WORKERS', 8))
-SRC = os.environ.get('RP_S10L_SRC', 's04_pilot.jsonl')
+SRC = os.environ.get('RP_S10L_SRC', 's04c_phase4.jsonl')
 OUT = os.environ.get('RP_S10L_OUT', 's10_pool.jsonl')
 TRUNC_RATIO = float(os.environ.get('RP_TRUNC', 0.4))
 # cut 档至少要删掉这么多，否则视为造法失效（实测模型常只删 1%-3%）

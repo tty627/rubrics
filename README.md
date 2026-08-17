@@ -41,17 +41,20 @@ RP_CLEAN=1 bash scripts/rerun_all.sh # 同时清结构线缓存（全部 LLM 调
 
 一条命令跑完：种子 → 结构线 → 交付导出 → Phase 4 实测 → 检查点 2 → xlsx 填充 → 审计 → 单测。中途中断可随时重跑同一条命令，LLM 缓存保证已完成的部分不重复计费。
 
-默认模型（均可被同名环境变量覆盖，判分器/veto 必须异源，各步启动时校验）：
+默认模型：每个角色一个候选名，候选不在本机 `config/models.json` 里就自动回退到该角色在配置里的第一个模型（判分器/veto 必须异源，各步启动时校验）：
 
-| 角色 | 环境变量 | 默认 |
-|------|---------|------|
-| 生成（s01-s04） | `RP_M_GEN` / `RP_M_FILTER` / `RP_M_ROUTE` | glm-ac |
-| 锚定 grounding（s05） | `RP_M_GROUND` | deepseek（原全量口径 by-ground） |
-| 负项分级 | `RP_M_S04LC` | cn-judge |
-| 判分 / 草稿判分 | `RP_M_JUDGE` | cn-judge |
-| veto 复判（第二票） | `RP_M_VETO` | cn-veto |
-| 处置重写 | `RP_M_S11LD` | cn-gen |
-| 回复池复核 | `RP_M_POOL_CHECK` | cn-judge |
+| 角色 | 环境变量 | 候选默认 | 回退 |
+|------|---------|---------|------|
+| 生成（s01-s04） | `RP_M_GEN` / `RP_M_FILTER` / `RP_M_ROUTE` | glm-ac | generator 角色第一个 |
+| 锚定 grounding（s05） | `RP_M_GROUND` | deepseek（原全量口径 by-ground） | grounder 角色第一个 |
+| 负项分级 | `RP_M_S04LC` | cn-judge | judge 角色第一个 |
+| 判分 / 草稿判分 | `RP_M_JUDGE` | cn-judge | judge 角色第一个 |
+| veto 复判（第二票） | `RP_M_VETO` | cn-veto | family ≠ 生成器与判分器的第一个 |
+| 处置重写 | `RP_M_S11LD` | cn-gen | generator 角色第一个 |
+| 回复池复核 | `RP_M_POOL_CHECK` | cn-judge | judge 角色第一个 |
+| 回复池 mid / weak / strong | `RP_M_POOL_MID/WEAK/STRONG` | glm-ad / glm-ad / glm-ac | pool_mid / pool_weak / generator |
+
+**veto 第三 family 要求**：`RP_M_VETO` 的模型 family 必须既不同于生成器也不同于判分器（硬约束 2）。如果 config 里只有两个 family（比如 glm × 2 + deepseek），Phase 4 的 s12 会明确报错而不是静默降级——需要给 `models.json` 补一个第三 family 的端点（如 qwen / openai / minimax 系），或显式 `RP_M_VETO=<第三个 family 的模型名>`。
 
 ### 5. 分步跑（调试用）
 
