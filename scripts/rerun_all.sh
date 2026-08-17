@@ -37,8 +37,8 @@ set_default RP_M_JUDGE cn-judge
 set_default RP_M_VETO cn-veto        # 开发机无 → 不设，s12 自动挑第三 family
 set_default RP_M_S11LD cn-gen        # 开发机无 → 角色默认（glm-ac）
 set_default RP_M_POOL_CHECK cn-judge
-set_default RP_M_POOL_MID glm-ad     # 开发机有；本机无 → by-pool-mid（原口径）
-set_default RP_M_POOL_WEAK glm-ad    # 同上
+set_default RP_M_POOL_MID deepseek   # glm-ad 在开发机 404（2026-08-17 实测），用两机都通的 deepseek
+set_default RP_M_POOL_WEAK glm-ac    # by-pool-weak 的 by 凭证已失效；用 glm-ac + 弱化 prompt
 set_default RP_M_POOL_STRONG glm-ac
 export RP_M_GEN RP_M_FILTER RP_M_ROUTE RP_M_S04LC RP_M_JUDGE RP_M_S11LD \
        RP_M_POOL_CHECK RP_M_POOL_MID RP_M_POOL_WEAK RP_M_POOL_STRONG
