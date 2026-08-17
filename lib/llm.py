@@ -30,7 +30,7 @@ STRIKES = int(os.environ.get('RP_RUNAWAY_STRIKES', 2))
 # --- 调用事件流水 ---------------------------------------------------------
 # 缓存文件只有 text 和 usage，没有模型名、没有输入，也看不到「正在飞」的请求，
 # 所以旁观者无从知道此刻哪个模型在跑哪道题。这里补一条 append-only 流水：
-# 每次调用落 start / end（或 hit / err），tools/watch.py 靠配对 start-end 还原在飞请求。
+# 每次调用落 start / end（或 hit / err），外部观测工具可配对 start-end 还原在飞请求。
 # 写失败一律吞掉——观测设施不能反过来弄挂流水线。
 EVENTS = os.environ.get('RP_EVENTS', os.path.join(CACHE_DIR, '_events.jsonl'))
 EV_CHARS = int(os.environ.get('RP_EV_CHARS', 400))       # 输入/输出各留多少字

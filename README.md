@@ -55,7 +55,6 @@ python3 tests/test_rubric.py
 
 ```bash
 head -1 outputs/rubrics_advisor_lean.jsonl | python3 -m json.tool
-cat docs/advisor/generated_rubrics_samples.md      # 3 个完整案例
 ```
 
 ## 交付 schema
@@ -206,10 +205,8 @@ tests/       语义核心纯逻辑单测（零 LLM）：test_rubric.py / test_s0
 pyproject.toml  项目元数据（纯标准库，零依赖）；Makefile  常用入口（make check / seed / phase4 / ...）
 config/      模型端点配置（models.json 含 api_key，已 gitignore）
 scripts/     辅助脚本：导出、审计、统计、xlsx 填充、一键重跑
-tools/       watch.py 监视面板
 docs/
   design/      流程定稿（简明版 / 完整版）+ 实施计划
-  advisor/     展示材料与案例
   reports/     技术报告：审查、修复记录、phase 报告
 legacy/      已归档，不参与交付，保留可运行状态（见 legacy/README.md）
   full_path/   旧全量线（被 s04_rubric 取代）
@@ -221,18 +218,6 @@ cache/ logs/  LLM 缓存、日志（均 gitignore）
 ```
 
 `data/`、`outputs/`、`cache/`、`logs/` 全部不入库：仓库只传可运行源码，种子与中间产物随侧车 tar（`rubrics_data_outputs_20260817.tar.gz`）走，解压到仓库根即可。打包方案见 `docs/design/RESTRUCTURE_PROPOSAL.md` §4。
-
-## 监视面板
-
-```bash
-python3 tools/watch.py            # 全屏刷新，走终端备用屏，Ctrl-C 恢复
-python3 tools/watch.py --once     # 快照，便于贴日志
-python3 tools/watch.py --tokens   # 展开 token 明细
-```
-
-只读，不影响在跑的进程。显示进程详情、在飞请求的完整 prompt/output、产出文件、端点负载与成功率。自动发现 `cache/` 下的新步骤，无需改面板代码。详见 `tools/README_watch.md`。
-
-端点侧 token 有多副本坑：某些 URL 后面挂多个副本，`/metrics` 随机命中一个，累计计数器会跳动。面板靠「计数器只增不减」识别副本并求和。
 
 ## 环境变量
 
@@ -256,8 +241,6 @@ python3 tools/watch.py --tokens   # 展开 token 明细
 
 **已知未修**：cut 档 20.9% 造法失效（LLM 删段不可靠，要改程序化删段）；64 道单回复题按硬约束 1 无法进 Phase 4，缺实测证据；`ref_errors` 内容丢弃（s00_seed 只存 key 名）。
 
-**清理陈旧文档**：`docs/RUBRICS_SCORE_BREAKDOWN.md`、`docs/RUBRICS_PURPOSE_AND_USAGE.md` 等仍按「满分统一 100、30.5 条/题」写，那是旧全量线的口径，已不成立。
-
 ## 参考论文
 
 | 论文 | arXiv | 在本项目中的作用 |
@@ -273,5 +256,4 @@ python3 tools/watch.py --tokens   # 展开 token 明细
 - `docs/design/rubric_pipeline_feishu_v2.md` — 流程定稿（14 步 + 题型判定），简明版
 - `docs/design/rubric_pipeline_full_v2.md` — 完整版，含论文依据与逐步出处对照
 - `docs/design/PLAN.md` — 分阶段实施计划，含成本估算与检查点
-- `docs/advisor/` — 展示材料与案例
 - `CLAUDE.md` — 开发上下文（架构、约定、修复记录）

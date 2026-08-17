@@ -137,7 +137,7 @@ def main():
         pass
 
     print("=" * 60)
-    print("提示: 详细报告见 docs/advisor/presentation_for_advisor.md")
+    print("提示: 详细审计见 python3 scripts/audit_rubrics.py")
     print("=" * 60)
 
 if __name__ == '__main__':

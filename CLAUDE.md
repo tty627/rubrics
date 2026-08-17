@@ -41,14 +41,12 @@ legacy/      已归档，不参与交付，保留可运行状态（见 legacy/RE
   run_pipeline.py  只驱动 full_path/ 那条线
 docs/
   design/    流程定稿与实施计划
-  advisor/   给导师看的展示材料
   reports/   技术报告：审查、修复记录、phase 报告
 outputs/
   excel/     填充后的 xlsx 产出
   samples/   样例展示
 scripts/     辅助脚本 + 三个一键重跑（rerun_lean_fixed / rerun_phase4 / rerun_checkpoint2）；一次性脚本在 scripts/legacy/
 pyproject.toml 项目元数据（纯标准库，零依赖）；Makefile 常用入口（make check / seed / phase4 / checkpoint2 / export）
-tools/       watch.py；其余监控面板在 tools/legacy/
 ```
 
 `scripts/` 下的脚本已改为基于 `__file__` 定位仓库根，可从任意目录调用。
@@ -163,29 +161,6 @@ RP_OUT=/path/to/output python3 stages/s00_seed.py
 - 路径: `cache/<stage>/<hash>.json`
 - 调 prompt 后，只重算受影响的哈希；未变的调用直接命中缓存
 - 清理缓存: `rm -rf cache/sXX/` (按 stage) 或 `rm -rf cache/` (全部)
-
-### 监视面板
-
-**watch.py** - 8 区块详尽模式：
-```bash
-python3 tools/watch.py          # 全屏刷新，Ctrl-C 退出
-python3 tools/watch.py --once   # 快照，便于贴日志
-python3 tools/watch.py --tokens # 展开 token 明细
-```
-
-显示：进程详情（pid/socket/环境变量）、在飞请求的完整 prompt/output、
-最近完成的详细内容、产出文件列表、端点负载与调用成功率。
-
-详细说明见 `tools/README_watch.md`。
-（`panel.py` 等旧面板已归档到 `tools/legacy/`。曾经文档里提到的 `watch_v2.py` 从未存在。）
-
-**特性**：
-- 只读，不影响在跑的进程
-- 全屏模式走终端备用屏(像 vim/htop)，退出后原内容恢复
-- 自动发现 `cache/` 下的新步骤，无需修改面板代码
-- 数据来源：`cache/<stage>/*.json` + `cache/_events.jsonl` + 端点 `/metrics`
-
-**端点侧 token 有多副本坑**：某些 URL 后面挂多个副本，`/metrics` 随机命中一个，累计计数器会跳动。面板靠「计数器只增不减」识别副本并求和。
 
 ## Critical Constraints
 

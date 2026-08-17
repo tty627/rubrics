@@ -123,8 +123,6 @@ if all_inputs_ok:
     if Path('cache/s04L').exists():
         print('  💡 存在缓存，实际调用次数会减少（仅重新调用 prompt 改变的部分）')
     print()
-    print('监控进度（另开终端）:')
-    print('  python3 tools/watch.py')
 else:
     print('\n❌ 输入数据缺失，无法运行！\n')
     print('请先运行步骤3生成输入:')
@@ -134,7 +132,6 @@ print('\n'+'='*80)
 print('  详细说明')
 print('='*80)
 print('\n文档:')
-print('  - 数据流向指南: docs/DATA_FLOW_GUIDE.md')
 print('  - 修复实施指南: docs/reports/S04L_FIX_GUIDE.md')
 print('  - 问题诊断报告: docs/reports/RUBRICS_REVIEW_FINDINGS.md')
 print()
