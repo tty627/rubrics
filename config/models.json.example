@@ -1,41 +1,47 @@
 [
   {
+    "_comment": "2026-08-17 验证过的内网配置（H 集群/开发机直接可用）。踩坑记录：1) generator 角色里别放 judge——judge family 必须不等于任一 generator family（硬约束）；2) 同 family 多端点会按 pool_group 合并成 Pool，config.get('glm-ac') 会失败，单端点不要 pool_group；3) glm-ad 端点当前 404 不可用，已从模板移除；4) veto 第二票需要生成器与判分器之外的第三个 family，这里用 qwen-utility。外网端点（opentech / by 中转 / 自建网关）在 H 集群不可达或凭证已失效，勿加入本配置。"
+  },
+  {
     "name": "glm-ac",
     "model_id": "GLM-5.2-FP8-ac",
     "base_url": "http://s-20260716110819-fqdcz.ailab-opencompass.pjh-service.org.cn/v1",
     "api_key": "sk-admin",
     "family": "glm",
     "timeout": 300,
-    "roles": ["generator"],
+    "roles": [
+      "generator"
+    ],
     "reasoning": true,
     "max_tokens": 8192,
-    "no_think_extra": {"chat_template_kwargs": {"enable_thinking": false}},
-    "pool_group": "glm_pool",
-    "_comment": "pool_group 相同的端点会合并成一个 Pool，用于分流负载"
-  },
-  {
-    "name": "glm-ad",
-    "model_id": "GLM-5.2-FP8-ad",
-    "base_url": "http://s-20260716110846-bvugs.ailab-opencompass.pjh-service.org.cn/v1",
-    "api_key": "sk-admin",
-    "family": "glm",
-    "timeout": 300,
-    "roles": ["generator"],
-    "reasoning": true,
-    "max_tokens": 8192,
-    "no_think_extra": {"chat_template_kwargs": {"enable_thinking": false}},
-    "pool_group": "glm_pool",
-    "_comment": "合并后的 Pool 名为 glm-ac+glm-ad，按最少在飞请求数派发"
+    "no_think_extra": {
+      "chat_template_kwargs": {
+        "enable_thinking": false
+      }
+    }
   },
   {
     "name": "deepseek",
-    "model_id": "deepseek-chat",
-    "base_url": "https://api.deepseek.com/v1",
-    "api_key": "你的 API key",
+    "model_id": "DeepSeek-V4-Pro",
+    "base_url": "http://s-20260803174027-xcnr4.ailab-llmeval.pjh-service.org.cn/v1",
+    "api_key": "sk-admin",
     "family": "deepseek",
     "timeout": 180,
-    "roles": ["generator", "judge", "diagnoser"],
-    "_comment": "deepseek 单副本，不进 pool_group，直接作为 Model 使用"
+    "roles": [
+      "judge",
+      "diagnoser",
+      "grounder"
+    ],
+    "_comment": "judge family=deepseek 不等于 generator family=glm；grounder 角色供 s05 锚定用"
+  },
+  {
+    "name": "qwen-utility",
+    "model_id": "Qwen/Qwen2.5-32B-Instruct",
+    "base_url": "http://s-20260716110819-fqdcz.ailab-opencompass.pjh-service.org.cn/v1",
+    "api_key": "sk-admin",
+    "family": "qwen",
+    "timeout": 180,
+    "roles": [],
+    "_comment": "veto 第二票自动挑选 family 不等于 generator/judge 的模型（qwen 不等于 glm/deepseek）"
   }
 ]
-
