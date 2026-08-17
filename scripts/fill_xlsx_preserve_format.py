@@ -67,8 +67,10 @@ def format_rubric(rubrics, full_mark):
 def main():
     # 原始 xlsx 路径可用 RP_XLSX_SRC 覆盖；产出统一落到 outputs/excel/
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 2026-08-17：默认模板从 $HOME 硬编码改为仓库内 data/input.xlsx（原数据源，
+    # 已从模板恢复并验证与 seed.jsonl 往返一致），仓库自包含、换机可跑。
     original_file = os.environ.get('RP_XLSX_SRC',
-                                   '/home/tantianye/Untitled spreadsheet.xlsx')
+                                   os.path.join(repo_root, 'data', 'input.xlsx'))
     out_dir = os.path.join(repo_root, 'outputs', 'excel')
     os.makedirs(out_dir, exist_ok=True)
     output_file = os.path.join(out_dir, 'Untitled spreadsheet (已填充rubrics).xlsx')

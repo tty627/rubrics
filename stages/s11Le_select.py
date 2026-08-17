@@ -82,6 +82,10 @@ def main():
         stat['|'.join(sorted(f)) or 'OK'] += 1
         moved[ROUNDS[best_i]] += 1
         rec = dict(best_r)
+        # s11Ld 的处置记录改挂 `_` 前缀：导出层按「`_` 前缀 = 内部字段」的规则
+        # 决定进不进内部档，不带前缀就被静默丢掉（内部档里查不到某题为什么被改）
+        if 's11Ld' in rec:
+            rec['_s11Ld'] = rec.pop('s11Ld')
         rec['_s11Le'] = {'chosen_round': ROUNDS[best_i],
                          'residual': sorted(f - {'skip'}),
                          'skipped': f == {'skip'},

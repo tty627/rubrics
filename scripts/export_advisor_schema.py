@@ -134,6 +134,13 @@ def build_record(r, full=False):
         rec['_needs_regen'] = bool(r.get('needs_regen'))
         # veto 覆盖情况留在记录级，审计时不用再遍历 rubrics 数组
         rec['_n_veto'] = len(rubric.veto_items(rubrics))
+        # 记录级 `_` 前缀字段一律带上（与准则级 internal_fields() 同一条规则）。
+        # 上面那几行是硬编码名单，加新步骤时会**静默**漏字段 —— 已经漏过：
+        # Phase 4 的 `_s11Ld`（处置动作/原因）与 `_s11Le`（选中轮次/残留缺陷）
+        # 都不在名单里，内部档里查不到某题为什么被改、改自哪一轮。
+        for k in r:
+            if k.startswith('_') and k not in rec:
+                rec[k] = r[k]
 
     return rec
 
