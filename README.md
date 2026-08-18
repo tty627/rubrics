@@ -27,6 +27,7 @@ bash pipeline/00_run_all.sh
 
 ```bash
 bash pipeline/01_run_task_preparation.sh
+# 或从已构建 seed 开始：RP_SEED_ONLY=/path/to/seed.jsonl bash pipeline/01_run_task_preparation.sh
 bash pipeline/02_run_rubric_generation.sh
 bash pipeline/03_run_response_evaluation.sh
 bash pipeline/04_run_release_verification.sh

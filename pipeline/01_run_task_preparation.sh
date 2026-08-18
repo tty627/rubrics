@@ -4,8 +4,13 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 mkdir -p data/tasks cache/numbered
 export RP_CACHE=${RP_CACHE:-$ROOT/cache/numbered}
-python3 pipeline/01_build_task_dataset.py
-cp data/seed.jsonl data/tasks/01_task_dataset.jsonl
+if [ -n "${RP_SEED_ONLY:-}" ]; then
+  cp "$RP_SEED_ONLY" data/tasks/01_task_dataset.jsonl
+  cp data/tasks/01_task_dataset.jsonl data/seed.jsonl
+else
+  python3 pipeline/01_build_task_dataset.py
+  cp data/seed.jsonl data/tasks/01_task_dataset.jsonl
+fi
 cp data/tasks/01_task_dataset.jsonl data/seed.jsonl
 python3 pipeline/02_filter_tasks.py
 cp data/s01_filter.jsonl data/tasks/02_filtered_tasks.jsonl
