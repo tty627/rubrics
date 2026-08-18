@@ -67,7 +67,7 @@ def detect(q):
 def build(r):
     q = r['question']
     hits = detect(q)
-    u = [task_input.prompt_context(r, question=q),
+    u = [task_input.filter_prompt_context(r, question=q),
          '【候选回答隔离】本步骤只判断题目是否可评分，不读取任何待评分回答。\n']
     u.append(f'【检测器命中（仅线索，多为误报）】{hits or "无"}')
     return [{'role': 'system', 'content': SYS},

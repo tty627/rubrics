@@ -158,6 +158,18 @@ class NumberedPipelineTests(unittest.TestCase):
                 capture_output=True, text=True)
             self.assertEqual(0, compare.returncode, compare.stderr)
 
+    def test_filter_prompt_excludes_later_user_materials(self):
+        from lib import task_input
+        record = {"question": "main task", "task_messages": [
+            {"role": "system", "content": "format constraint"},
+            {"role": "user", "content": "main task"},
+            {"role": "user", "content": "LATER_RESEARCH_MATERIAL"},
+        ]}
+        text = task_input.filter_prompt_context(record)
+        self.assertIn("format constraint", text)
+        self.assertIn("main task", text)
+        self.assertNotIn("LATER_RESEARCH_MATERIAL", text)
+
 
 if __name__ == "__main__":
     unittest.main()

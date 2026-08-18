@@ -32,7 +32,7 @@ def user_task_text(messages):
 
 
 def load_source_index(path):
-    """Index source sessions by normalized final user turn; ambiguous matches stay explicit."""
+    """Index source sessions by normalized first user turn; ambiguous matches stay explicit."""
     index = defaultdict(list)
     if not path:
         return index
@@ -76,6 +76,16 @@ def attach_source_messages(record, source_index):
                               if m["role"] in ("system", "developer")]
     out["user_messages"] = [m["content"] for m in out["task_messages"] if m["role"] == "user"]
     return out
+
+
+def filter_prompt_context(record, question=None, max_chars=12000):
+    """Render source constraints and the current query, excluding later task materials."""
+    messages = task_messages(record.get("task_messages"))
+    blocks = [f'【原始{message["role"]}约束】\n{message["content"]}'
+              for message in messages if message["role"] in ("system", "developer")]
+    effective = question or record.get("query_eff") or record.get("question", "")
+    blocks.append(f"【当前题目】\n{effective}")
+    return "\n\n".join(blocks)[:max_chars]
 
 
 def prompt_context(record, question=None, max_chars=12000):
