@@ -1,255 +1,150 @@
-# Rubric 自动生成流水线
+# Rubric Pipeline
 
-把一道题自动转成一份可逐条二元判定的评分标准（rubric），用于评估模型回复质量、挖掘 bad case。
+Rubric 自动生成、实测和交付流水线。当前主线使用稳定的分段编号：
 
-骨架取自三篇论文：Qworld 的 RET 递归展开（arXiv:2603.23522）、RubricHub 的三阶段生成（arXiv:2601.08430）、RIFT 的失效模式诊断（arXiv:2604.01375），另加一层题型路由（verifiable / open / hybrid）。
+- 01-05：题目准备
+- 06-11：rubric 生成和结构修订
+- 20-26：候选回答实测和反馈修订
+- 30-33：发布检查和交付
 
-纯标准库实现，无第三方依赖（Python 3.12+）。LLM 调用走自建的 OpenAI 兼容客户端，带磁盘缓存与并发控制。
+旧的 s04L、s11Ld、lean、388/452 文件名只作为兼容历史，不再是用户接口。
 
-## 快速开始
+## Quick Start
 
-### 1. 环境要求
-
-- Python 3.12+，无需 pip install（零第三方依赖）
-- 可访问的 OpenAI 兼容模型端点（生成 / 判分两类模型，见 `config/models.json.example`）
-
-### 2. 配置模型端点
+配置 config/models.json，并将输入放在 data/input.xlsx。若原始数据包含完整 messages，必须通过 `RP_SOURCE_JSONL` 提供原始会话 JSONL，以保留 system/developer/user 约束：
 
 ```bash
-cp config/models.json.example config/models.json   # 填入实际 base_url / api_key
+export RP_SOURCE_JSONL=/path/to/generation.jsonl
 ```
 
-### 3. 准备输入数据
-
-把题目表放到 `data/input.xlsx`（列：A=need_rewrite, B=rewritten, C=gen_rubric, D=question, E=dimension, F=draft_rubric, G=ref_response）。
-
-如果数据是 OpenCompass 线上日志格式（`generation_ol_*.jsonl`，多轮 messages + label 标注），用转换脚本：
+未提供时，Stage 01 会把记录明确标为 `task_message_status=question_only`；同一用户题目匹配多个会话时标为 `ambiguous`，不会猜选。然后运行：
 
 ```bash
-python3 scripts/convert_ol_logs.py --src <日志.jsonl> --out-dir <输出目录>
-# 产出 input.xlsx + seed.jsonl（两者 s00_seed 往返一致）+ labels.jsonl（人工标注 sidecar）+ report.json
+bash pipeline/00_run_all.sh
 ```
 
-映射规则：question ← 第一条 user 消息；ref_responses ← assistant 消息（取 2 条最长的，双回复才能进 Phase 4）；subject ← label.domain；draft_rubric 留空（原数据无草稿，检查点 2 的对照需另行补）。
-
-### 4. 一键跑全流程
+分段运行：
 
 ```bash
-bash scripts/rerun_all.sh            # 或 make all
-RP_CLEAN=1 bash scripts/rerun_all.sh # 同时清结构线缓存（全部 LLM 调用重算）
+bash pipeline/01_run_task_preparation.sh
+bash pipeline/02_run_rubric_generation.sh
+bash pipeline/03_run_response_evaluation.sh
+bash pipeline/04_run_release_verification.sh
 ```
 
-一条命令跑完：种子 → 结构线 → 交付导出 → Phase 4 实测 → 检查点 2 → xlsx 填充 → 审计 → 单测。中途中断可随时重跑同一条命令，LLM 缓存保证已完成的部分不重复计费。
-
-默认模型：每个角色一个候选名，候选不在本机 `config/models.json` 里就自动回退到该角色在配置里的第一个模型（判分器/veto 必须异源，各步启动时校验）：
-
-| 角色 | 环境变量 | 候选默认 | 回退 |
-|------|---------|---------|------|
-| 生成（s01-s04） | `RP_M_GEN` / `RP_M_FILTER` / `RP_M_ROUTE` | glm-ac | generator 角色第一个 |
-| 锚定 grounding（s05） | `RP_M_GROUND` | config 里 roles 含 `grounder` 的模型（没有则 deepseek 兜底） | 原全量口径 by-ground |
-| 负项分级 | `RP_M_S04LC` | cn-judge | judge 角色第一个 |
-| 判分 / 草稿判分 | `RP_M_JUDGE` | cn-judge → deepseek | judge 角色第一个 |
-| veto 复判（第二票） | `RP_M_VETO` | cn-veto → qwen-utility | family ≠ 生成器与判分器的第一个 |
-| 处置重写 | `RP_M_S11LD` | cn-gen → glm-ac | generator 角色第一个 |
-| 回复池复核 | `RP_M_POOL_CHECK` | cn-judge → deepseek | judge 角色第一个 |
-| 回复池 mid / weak / strong | `RP_M_POOL_MID/WEAK/STRONG` | deepseek / glm-ac / glm-ac | pool_mid→judge / pool_weak→generator / generator |
-
-**veto 第三 family 要求**：`RP_M_VETO` 的模型 family 必须既不同于生成器也不同于判分器（硬约束 2）。如果 config 里只有两个 family（比如 glm × 2 + deepseek），Phase 4 的 s12 会明确报错而不是静默降级——需要给 `models.json` 补一个第三 family 的端点（如 qwen / openai / minimax 系），或显式 `RP_M_VETO=<第三个 family 的模型名>`。
-
-### 5. 分步跑（调试用）
+Makefile 入口：
 
 ```bash
-python3 stages/s00_seed.py && python3 stages/s01_filter.py && \
-  python3 stages/s02_context.py && python3 stages/s02b_route.py && \
-  RP_RET=lean python3 stages/s03_perspective.py   # 结构线前置
-bash scripts/rerun_lean_fixed.sh                  # 结构线主体 + 导出
-bash scripts/rerun_phase4.sh                      # Phase 4 实测
-bash scripts/rerun_checkpoint2.sh                 # 检查点 2 放行闸门
+make all
+make tasks
+make rubric
+make evaluate
+make release
+make check
 ```
 
-### 6. 审计与单测
+## Data Boundary
 
-```bash
-make check                                        # 全仓编译检查 + 语义核心单测
-python3 scripts/audit_rubrics.py                  # 交付档审计
+候选 AI 回答是 rubric 冻结后要评分的对象，不是 rubric 生成输入。
+
+```text
+题目 + 题面明确约束
+  -> 01-05 题目准备
+  -> 06-11 rubric 生成并冻结
+  -> 20-26 候选回答实测
+  -> 30-33 发布检查
 ```
 
-每步独立读写 `data/` 下的 jsonl，任一步可单独重跑。LLM 调用按 `model + prompt + params` 哈希缓存到 `cache/<stage>/`，改一个 prompt 只重算受影响的哈希。
+01-11 不得读取 ref_responses、候选回答锚点或从候选回答抽出的 canonical answer。完整 system/user 约束属于题目输入，应保存在 task context 中。候选回答只允许进入 rubric 冻结后的评测阶段。
 
-### 失败记录与手动重跑
+## Numbered Stages
 
-并发 stage 不再把失败项当成「不存在」：`lib/stage.run()` 保留输入下标和错误，并追加到 `data/_stage_errors.jsonl`（可用 `RP_FAILURE_MANIFEST` 指定路径）。Phase 4 产物还会把它们写回 JSONL。不要只看文件行数，必须同时检查档位完整性。
+### 01-05 Task Preparation
 
-- 记录级失败写在 `_stage_errors`：`[{"stage": "s12L", "key": "strong", "error": "..."}]`。
-- 回复池失败写在 `pool_errors`；正式/草稿判分失败写在 `judged[tier].judge_error` 或 `draft_judged[tier].judge_error`。
-- 草稿缺失不会被当成 0 分：`s12b_draft_judge.py` 写 `_checkpoint2.exclude_reason=缺草稿 rubric`，`s12c_pairwise.py` 会逐题保留并排除。
-- `rerun_checkpoint2.sh` 会先校验 Phase 4 文件时间、题集、六档回复池、判分档位和终态选择；Phase 4 中途失败时直接退出 `2`，不会读取上一轮旧产物。
-- `s12c_pairwise.py` 总是写出每道 Phase 4 题的 `excluded` / `exclude_reason`。退出码 `0` = 放行，`1` = 有可测 pair 但判据未通过，`2` = 没有可测 pair，不能误判为通过；如果输入数据没有草稿 rubric，全部排除并退出 `2` 是预期结果。
-- `s11c_consequential.py` 遇到缺档、判分失败或不完整判分时写 `skip_reason`，不会把该题算成无缺陷；早期产物中的 `s11Lc` 轮次名会自动兼容为 `s11c`。
+| Stage | Entry | Output |
+|---:|---|---|
+| 01 | pipeline/01_build_task_dataset.py | data/tasks/01_task_dataset.jsonl |
+| 02 | pipeline/02_filter_tasks.py | data/tasks/02_filtered_tasks.jsonl |
+| 03 | pipeline/03_extract_task_context.py | data/tasks/03_task_context.jsonl |
+| 04 | pipeline/04_classify_task_type.py | data/tasks/04_task_types.jsonl |
+| 05 | pipeline/05_generate_evaluation_axes.py | data/tasks/05_evaluation_axes.jsonl |
 
-手动重跑时按以下顺序确认：
+### 06-11 Rubric Generation
+
+| Stage | Entry | Output |
+|---:|---|---|
+| 06 | pipeline/06_generate_rubric_draft.py | data/rubric/06_rubric_draft.jsonl |
+| 07 | pipeline/07_diagnose_rubric.py | data/rubric/07_rubric_diagnosed.jsonl |
+| 08 | pipeline/08_apply_rubric_diagnosis.py | data/rubric/08_rubric_revised.jsonl |
+| 09 | pipeline/09_rewrite_rubric_criteria.py | data/rubric/09_rubric_criteria_rewritten.jsonl |
+| 10 | pipeline/10_classify_negative_criteria.py | data/rubric/10_negative_criteria_classified.jsonl |
+| 11 | export | data/rubric/11_rubric_delivery_source.jsonl |
+
+### 20-26 Response Evaluation
+
+| Stage | Responsibility | Output |
+|---:|---|---|
+| 20 | Independently resolve canonical answers (`solver`, fallback `judge`), then select measurable tasks | data/evaluation/20_answer_resolved_tasks.jsonl / 20_evaluation_tasks.jsonl |
+| 21 | Build response pool | data/evaluation/21_response_pool.jsonl |
+| 22 | Score response pool | data/evaluation/22_response_scores.jsonl |
+| 23 | Diagnose discrimination | data/evaluation/23_discrimination_diagnostics.jsonl |
+| 24 | Revise from measurement | data/evaluation/24_rubric_measurement_revision_rNN.jsonl |
+| 25 | Select best revision | data/evaluation/25_selected_rubrics.jsonl |
+| 26 | Build measured delivery source | data/evaluation/26_rubric_delivery_source.jsonl |
+
+### 30-33 Release Verification
+
+| Stage | Responsibility | Output |
+|---:|---|---|
+| 30 | Score draft rubric | data/release/30_draft_rubric_scores.jsonl |
+| 31 | Pairwise comparison | data/release/31_pairwise_comparison.jsonl |
+| 32 | Export xlsx | outputs/current/rubric_delivery.xlsx |
+| 33 | Audit delivery | data/release/33_delivery_audit.json |
+
+## Output Layout
+
+```text
+data/
+  tasks/       01-05 task artifacts
+  rubric/      06-11 rubric artifacts
+  evaluation/  20-26 measured evaluation artifacts
+  release/     30-33 release artifacts
+
+outputs/
+  current/
+    rubric_delivery.jsonl
+    rubric_internal.jsonl
+    rubric_delivery.xlsx
+    run_manifest.json
+  runs/<run_id>/
+    immutable delivery snapshot and manifest
+
+cache/
+  numbered semantic stage directories for new runs
+  existing sXX directories are legacy caches
+```
+
+题量不写进文件名。task_count、evaluation_task_count、delivery_task_count、Git commit 和 run_id 写在 outputs/current/run_manifest.json。
+
+## Delivery Schema
+
+每行一题，rubrics 包含 criteria、score、reason、dimension、is_positive、is_gate。负项可带 severity 和 is_veto。full_mark 等于所有正向 score 之和；任一已确认 veto 命中时整题最终得分率为 0。
+
+## Compatibility
+
+旧 stages/sXX_*.py、scripts/rerun_*.sh 和平铺 data/sXX*.jsonl 暂时保留兼容。新代码、文档和自动化只使用 pipeline/ 编号入口和规范目录。
+
+映射表：docs/design/STAGE_MIGRATION_MAP.md
+
+完整流程说明：docs/design/NUMBERED_PIPELINE.md
+
+历史实现位于 legacy/，不属于当前交付主线，不得作为 outputs/current 的数据源。
+
+## Validation
 
 ```bash
 make check
-bash scripts/rerun_phase4.sh
-bash scripts/rerun_checkpoint2.sh
+python3 pipeline/33_audit_rubric_delivery.py outputs/current/rubric_delivery.jsonl
 ```
 
-精简开发机配置只声明 `generator/judge` 也能运行：`pool_mid` 自动回退 judge，`pool_weak` 自动回退 generator；分段脚本还会优先按已验证的 `deepseek/glm-ac` 名称显式选择并打印实际模型。
-
-如果终端报告失败，先查看对应 JSONL 的 `_stage_errors` / `pool_errors` / `judge_error` 和检查点明细，再按失败的 stage 重跑；修复或服务恢复后，缓存会复用成功任务，不需要盲目清空全部缓存。数据本身没有草稿 rubric 时只跑 Phase 4，补齐草稿后再跑检查点 2。
-
-## 项目结构
-
-### 目录
-
-```
-rubrics/
-├── stages/         流水线 20 个 stage，每步独立读写 data/*.jsonl，任一步可单独重跑
-├── lib/            基础库 7 个：xlsx / llm / config / stage / dimensions / rubric / answer_check
-├── scripts/        一键与分步入口、导出、审计、xlsx 填充
-├── tests/          语义与流水线完整性单测（零 LLM）：test_rubric / test_s04_flags / test_pipeline_integrity
-├── config/         模型端点配置（models.json 含 api_key，gitignore；example 为模板）
-├── docs/           design/ 流程定稿与实施计划；reports/ 技术报告
-├── legacy/         已归档的旧实现（full_path / phase3 / phase4），保留可运行状态
-├── data/           中间产物与种子（gitignore，随侧车 tar 走）
-├── outputs/        交付档 + 内部档 + 填充后的 xlsx（gitignore）
-├── cache/          LLM 调用缓存，按 stage 分目录（gitignore）
-├── logs/           运行日志（gitignore）
-├── Makefile        常用入口：make all / check / seed / phase4 / checkpoint2 / export
-└── pyproject.toml  项目元数据（纯标准库，零依赖）
-```
-
-### 流水线
-
-14 步流程（stage 编号 = PLAN.md 的步骤位），实际实现分两条线：
-
-**结构线**（452 题全量）：
-
-```
-data/input.xlsx
-  ↓ s00_seed        xlsx → seed.jsonl + baseline.json（草稿基线指标）
-  ↓ s01_filter      过滤
-  ↓ s02_context     intent + scenarios
-  ↓ s02b_route      题型路由（步骤 2.5）→ question_type + rubric_form + blocks
-  ↓ s03_perspective RET 视角展开（RP_RET=lean）
-  ↓ s05_ground      锚定 grounding：抽 anchors / answer_canonical / anchor_key
-  ↓ s04_rubric      准则直出（读 s05_grounded，带锚生成；含血缘 + 质量标记）
-  ↓ s11_diagnose    RIFT 四失效模式诊断
-  ↓ s11b_remedy     诊断后分级处置
-  ↓ s04b_split      拆非原子 + 事实纠错 + 标记重写
-  ↓ s04c_severity   负项 severity 分级 + veto 标记
-  ↓ export_advisor_schema.py → outputs/rubrics_advisor_lean.jsonl 交付档
-```
-
-**Phase 4 实测线**（388 双回复题）：
-
-```
-s04c_severity.jsonl（452）
-  ↓ 筛双回复        s04c_phase4.jsonl（单回复题按硬约束 1 排除）
-  ↓ s10_pool        6 档回复池（strong / mid / trunc / cut / weak / adv）
-  ↓ s12_judge       判分（veto 两票制 + 同源一致性修正）
-  ↓ s11c_consequential  区分度诊断（Hackable / LowSignal / floor）
-  ↓ s11d_remedy ⇄ s12_judge 重判 ⇄ s11c_consequential 复诊（×3 轮闭环）
-  ↓ s11e_select     各轮实测证据里挑每题最优
-  ↓ s04c_severity（补分级）→ 合并 64 单回复题 → s11e_all452.jsonl ← 最终交付源
-  ↓ s12b_draft_judge  草稿 rubric 判分（检查点 2）
-  ↓ s12c_pairwise     新 vs 草稿 pairwise 放行闸门（检查点 2）
-```
-
-### stage 职责表
-
-| stage | 职责 |
-|---|---|
-| s00_seed | xlsx → 种子集 + 草稿基线 |
-| s00b_sample / s00c_pilot | 抽样 / 试点工具 |
-| s01_filter | 题目过滤 |
-| s02_context | intent + scenarios |
-| s02b_route | 题型路由（步骤 2.5） |
-| s03_perspective | RET 视角展开 |
-| s04_rubric | 准则直出（含血缘 + 质量标记） |
-| s04b_split | 拆非原子 + 事实纠错 |
-| s04c_severity | 负项分级 + veto 标记 |
-| s05_ground | 锚定 grounding（s03 之后、s04 之前，抽锚点与标准答案） |
-| s10_pool | 6 档回复池 |
-| s11_diagnose | RIFT 失效模式诊断 |
-| s11b_remedy | 诊断后分级处置 |
-| s11c_consequential | 区分度诊断 |
-| s11d_remedy | 实测闭环处置 |
-| s11e_select | 终态选择（挑每题最优） |
-| s12_judge | 判分（veto 两票制） |
-| s12b_draft_judge | 草稿 rubric 判分（检查点 2） |
-| s12c_pairwise | 新 vs 草稿 pairwise 闸门（检查点 2） |
-
-## 输出物
-
-| 文件 | 说明 |
-|------|------|
-| `outputs/rubrics_advisor_lean.jsonl` | 交付档：每行一题，452 题 × 准则数组 |
-| `outputs/rubrics_internal.jsonl` | 内部档：额外带血缘、RIFT 诊断、质量标记 |
-| `outputs/excel/*.xlsx` | 交付档同源的人读版，C 列填 rubric，保留原格式 |
-| `data/s11e_all452.jsonl` | 流水线末端数据源（跑过 Phase 4 后） |
-| `data/_stage_errors.jsonl` | 所有 stage 的失败下标、输入 key 与错误摘要（可按 `RP_FAILURE_MANIFEST` 改路径） |
-
-交付档准则字段：`criteria`（判定文本）、`score`（原始整数权重，正向 1-3、答案项 6-8、负向 -2/-3）、`reason`、`dimension`、`is_positive`（方向）、`is_gate`（gated_answer 题的答案阀门）、`severity` / `is_veto`（只挂负项；veto 命中 → 整题得分率 0）。`full_mark = sum(正向 score)`。看样例：`head -1 outputs/rubrics_advisor_lean.jsonl | python3 -m json.tool`。
-
-## 脚本入口
-
-| 脚本 | 覆盖范围 | 说明 |
-|------|---------|------|
-| `rerun_all.sh` | 全流程 | **一键入口**：s00 → 交付 + Phase 4 + 检查点 2 + 审计单测 |
-| `rerun_lean_fixed.sh` | s05_ground → s04 → 诊断处置 → 导出 | 结构线一键；前四步（s00-s03）需先跑 |
-| `rerun_phase4.sh` | 回复池 → 判分 → 处置闭环 → 交付 | Phase 4 实测全量 |
-| `rerun_checkpoint2.sh` | 草稿判分 + pairwise 对比 | 放行闸门 |
-
-模型硬约束（脚本启动时校验）：判分器 family 必须 ≠ 生成器；veto 复判第二票 family 必须 ≠ 生成器与判分器。
-
-## 环境变量
-
-| 变量 | 默认 | 作用 |
-|------|------|------|
-| `RP_XLSX` | `data/input.xlsx` | 输入 xlsx |
-| `RP_OUT` | `data/` | 中间产物目录 |
-| `RP_CACHE` | `cache/` | 缓存目录 |
-| `RP_WORKERS` | 20 | 并发数 |
-| `RP_RET` | `hybrid` | RET 策略：lean / batch / hybrid / faithful。**lean 主线必须显式设 `lean`** |
-| `RP_RUBRIC_MIN` / `MAX` | 6 / 8 | 每题准则条数预算 |
-| `RP_CLEAN` | 0 | 一键/结构线脚本清缓存 |
-| `RP_EVENTS` | `cache/_events.jsonl` | 调用事件流水，设空串关闭 |
-| `RP_FAILURE_MANIFEST` | `data/_stage_errors.jsonl` | stage 失败清单，设空串关闭 |
-| `RP_<STAGE>_SRC` | 各步默认 | 换输入源，如 `RP_S04LB_SRC` |
-
-模型选择变量见「快速开始」第 4 步的默认模型表。
-
-## 命名规则
-
-stage 文件命名 `sNN[a-e]_语义词.py`：`NN` = PLAN.md 14 步计划里的步骤位，`a-e` = 同一步骤内的子步（按执行顺序）。数据文件默认名跟随 stage 前缀且不带基数（`s12_judged.jsonl`），具体数据集由脚本传带基数的 env。
-
-2026-08-17 归一化改名对照（旧 → 新，供对照历史文档用）：
-
-| 旧 | 新 | 旧 | 新 |
-|---|---|---|---|
-| s02_5_route | s02b_route | s11Lc_consequential | s11c_consequential |
-| s04L_rubric | s04_rubric | s11Ld_remedy | s11d_remedy |
-| s04Lb_split | s04b_split | s11Le_select | s11e_select |
-| s04Lc_severity | s04c_severity | s12L_judge | s12_judge |
-| s05L_ground | s05_ground | s12Lb_draft_judge | s12b_draft_judge |
-| s10L_pool | s10_pool | s12Lc_pairwise | s12c_pairwise |
-| s11L_diagnose | s11_diagnose | s11Lb_remedy | s11b_remedy |
-
-## 参考论文
-
-| 论文 | arXiv | 在本项目中的作用 |
-|------|-------|----------------|
-| Qworld | 2603.23522 | RET 递归展开（R_h 层次 + R_w 水平） |
-| RubricHub | 2601.08430 | 三阶段生成流程 |
-| RIFT | 2604.01375 | 失效模式诊断 |
-| RaR | 2507.17746 | 题型判定理论 |
-| QUBRIC | 2606.03968 | 准则措辞原则 |
-
-## 文档
-
-- `docs/design/rubric_pipeline_feishu_v2.md` — 流程定稿（14 步 + 题型判定），简明版
-- `docs/design/rubric_pipeline_full_v2.md` — 完整版，含论文依据与逐步出处对照
-- `docs/design/PLAN.md` — 分阶段实施计划，含成本估算与检查点
-- `CLAUDE.md` — 开发上下文（架构、硬约束、修复记录）
+LLM stage 失败会写入 data/_stage_errors.jsonl 和对应产物的错误字段。发布前同时检查 manifest、审计结果和测试，不能只比较 JSONL 行数。

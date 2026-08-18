@@ -1,23 +1,31 @@
-# 常用入口（纯标准库，无安装步骤；全部在仓库根目录执行）
-.PHONY: all check seed phase4 checkpoint2 export
+# Numbered pipeline entry points. Run from the repository root.
+.PHONY: all tasks rubric evaluate release check seed phase4 checkpoint2 export
 
-all:              ## 一键全流程（配置好 models.json 与 data/input.xlsx 后）
-	bash scripts/rerun_all.sh
+all:
+	bash pipeline/00_run_all.sh
 
-check:            ## 静态检查 + 语义核心单测（零 LLM）
-	python3 -m py_compile stages/*.py scripts/*.py lib/*.py tests/*.py
-	python3 tests/test_rubric.py
-	python3 tests/test_pipeline_integrity.py
+tasks:
+	bash pipeline/01_run_task_preparation.sh
 
-seed:             ## Phase 0：xlsx → 种子集 + 草稿基线
-	python3 stages/s00_seed.py
+rubric:
+	bash pipeline/02_run_rubric_generation.sh
 
-phase4:           ## Phase 4 实测全量（LLM 密集）
-	bash scripts/rerun_phase4.sh
+evaluate:
+	bash pipeline/03_run_response_evaluation.sh
 
-checkpoint2:      ## 检查点 2：新 vs 草稿 pairwise 放行闸门
-	bash scripts/rerun_checkpoint2.sh
+release:
+	bash pipeline/04_run_release_verification.sh
 
-export:           ## 交付档 + 内部档 + xlsx（依赖流水线末端数据）
-	python3 scripts/export_advisor_schema.py --src data/s11e_all452.jsonl --full
-	python3 scripts/fill_xlsx_preserve_format.py
+check:
+	python3 -m py_compile pipeline/*.py stages/*.py scripts/*.py lib/*.py tests/*.py
+	bash -n pipeline/00_run_all.sh pipeline/01_run_task_preparation.sh pipeline/02_run_rubric_generation.sh pipeline/03_run_response_evaluation.sh pipeline/04_run_release_verification.sh
+	python3 -m unittest discover -s tests -v
+
+# Compatibility aliases. Prefer the semantic targets above.
+seed: tasks
+phase4: evaluate
+checkpoint2: release
+
+export:
+	python3 scripts/export_advisor_schema.py --src data/evaluation/26_rubric_delivery_source.jsonl --out outputs/current/rubric_delivery.jsonl --full
+	python3 pipeline/32_export_rubric_xlsx.py

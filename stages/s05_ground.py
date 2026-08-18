@@ -1,28 +1,9 @@
-"""步骤 5：Response Grounding（lean 版）—— 用锚定回复抽出「可观察行为」，喂给 s04_rubric。
+"""Deprecated compatibility stage for historical candidate-response grounding.
 
-**与 legacy/phase4/s05_grounding.py 的根本差别**：
-  旧版插在 s04 **之后**，做事后 drift 检查（准则已经生成完了，再看哪条站不住）。
-  但设计文档 §5 要求的是「用强模型参考回答**锚定**准则」—— 锚是生成的输入，不是
-  事后的过滤器。而且旧版读的是 s04_criteria.jsonl 的旧 schema（positive/negative），
-  和 lean 的 criteria/is_positive 不兼容，直接搬过来会崩。
-
-  本步插在 s04_rubric **之前**：从锚定回复里抽出「一份实际回答在这道题上覆盖了哪些
-  可观察、可核对的内容点」，作为候选锚点交给 s04_rubric。
-
-**为什么这一步能治事实错误**：s11_diagnose 的第四检测器在全量上抓到 286 条事实错误
-（准则里写死的答案是编的）。根因就是没有锚 —— 模型凭记忆写「最终答案为 k=5」。
-有了锚点，准则的具体内容有实际文本可依，不用凭记忆。
-
-**硬约束第 1 条：锚定回复 ≠ 待评回复**。
-种子集每题最多 2 条参考回复，这里的分工是：
-  - 排序后的第 1 条 → 锚（本步用）
-  - 第 2 条          → 留给步骤 10 当待评对象，本步绝不读
-单回复题（种子集里 64 题）没法分离，标 `anchor_shared=True` 显式暴露，
-不静默降级 —— 这类题的判分结果不能和双回复题混在一起看。
-
-锚点**不是满分答案**。它只是一份实际回答，可能有遗漏、有错。
-所以抽取时同时标注 `confidence` 与 `gaps`（这份回答明显没覆盖的方面），
-s04_rubric 拿到后按置信度决定要不要采信。
+This stage must not run before rubric freeze and must not provide canonical truth.
+The numbered pipeline uses pipeline/20_resolve_canonical_answers.py, which reads only
+original system/developer/user task messages. This file remains only for reproducing
+historical artifacts and will be removed after legacy Phase 4 migration.
 """
 import json, os, sys
 from collections import Counter
@@ -54,8 +35,8 @@ SYS = f'''你在为一道题抽取「锚点」——即一份实际回答里**�
 它只是**一份**回答，可能漏、可能错。所以：
 - 你认为某个锚点内容**可能是错的** → 照样抽出来，但 `sound` 填 false 并说明疑点。
   下游会避免把它写成准则。
-- 你发现这道题**明显该答但这份回答没答**的方面 → 写进 `gaps`。
-  这是评分标准要覆盖的，恰恰是这份回答的不足。
+- `gaps` 只记录**题面明确要求、但这份回答没有覆盖**的方面。
+  不得用领域偏好、你心中的理想答案或这份回答的写法反推额外要求。
 
 【answer 字段】
 如果这道题有唯一确定的答案（数学题的解、代码题的输出、选择题的选项），
@@ -100,7 +81,7 @@ SYS = f'''你在为一道题抽取「锚点」——即一份实际回答里**�
   "answer_sound": true,
   "answer_kind": "numeric|option|token|formula|exact_text|none",
   "answer_canonical": "最小可判定串；formula/none 填空串",
-  "gaps": ["该答但这份回答没覆盖的方面，不超过30字"]}}'''
+  "gaps": ["题面明确要求但这份回答没覆盖的方面，不超过30字"]}}'''
 
 # 只有这两类做程序化比对。formula 等价写法太多（SMILES 可以有多种合法表示），
 # none 是自然语言，都退回 LLM 判分。

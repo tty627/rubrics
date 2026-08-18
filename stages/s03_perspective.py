@@ -21,7 +21,7 @@ import json, os, re, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage
+from lib import stage, task_input
 
 WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)
@@ -36,7 +36,11 @@ GATED = [{'name': '答案正确性', 'desc': '最终答案与可核验的标准�
          {'name': '推理过程完整性', 'desc': '给出得到该答案的关键步骤与依据', 'weight_hint': 'normal'},
          {'name': '表达清晰度', 'desc': '结论明确无歧义，便于核对', 'weight_hint': 'minor'}]
 
-_COMMON = '''【什么是「评价轴」】
+_COMMON = '''【证据边界】
+评价轴只能来自题目明确要求、明确给出的条件，以及完成任务不可缺少的判断。
+不得根据推测的用户身份、用途、偏好或单份参考回答的写法新增评价轴。
+
+【什么是「评价轴」】
 评价轴是判断一份回答在某个场景下是否站得住的**着眼点**，不是答案的内容要点。
 - 正例：「是否区分了适应症与禁忌症」「是否给出剂量依据的出处」
 - 反例：「介绍药物 A」「介绍药物 B」——这是答案提纲，不是评价轴
@@ -133,8 +137,8 @@ def _ctx(r):
     q = (r.get('query_eff') or r['question'])[:2500]
     return f'【学科】{" / ".join(r.get("subject") or []) or "未标注"}\n' \
            f'【提问意图】{r.get("intent", "")}\n' \
-           f'【隐性约束】{json.dumps(r.get("implicit_constraints", {}), ensure_ascii=False)}\n\n' \
-           f'【题目】\n{q}'
+           f'【题面明确约束】{json.dumps(r.get("implicit_constraints", {}), ensure_ascii=False)}\n\n' \
+           f'{task_input.prompt_context(r, question=q, max_chars=8000)}'
 
 
 class Ctr:

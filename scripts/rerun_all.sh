@@ -65,8 +65,8 @@ python3 stages/s02b_route.py
 RP_RET=lean python3 stages/s03_perspective.py
 echo
 
-# ---- 2. 结构线主体 + 导出（s05_ground → s04 → 诊断处置 → 导出）----
-echo "[2/6] 结构线（s05_ground → s04c_severity → 导出审计）..."
+# ---- 2. 结构线主体 + 导出（候选回答隔离）----
+echo "[2/6] 结构线（s04 → s04c_severity → 导出审计）..."
 bash scripts/rerun_lean_fixed.sh
 echo
 

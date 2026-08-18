@@ -2,9 +2,8 @@
 
 流程位置见 docs/design/rubric_pipeline_feishu_v2.md §2。
 
-两个上下文标签（intent、隐性约束）不是产出物，是**下一步展开的输入**：
-Scenarios 必须从 intent + 隐性约束推出，而不是从 query 字面直接联想，
-否则展开会退化成对题面关键词的同义改写。
+上下文标签用于整理题面明确表达的任务目标与约束，不推测提问者未陈述的动机。
+Scenarios 从题面要求推出；标签只能帮助归纳，不能成为新增评分要求的来源。
 
 scenario_id 由代码按 `{rid}-s{序号}` 生成，不交给模型。第 4 步的血缘标签、
 第 13 步按视角聚合、第 14 步回灌到第 3 步全靠它，模型自造的 id 不稳定，
@@ -14,7 +13,7 @@ import os, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage
+from lib import stage, task_input
 
 WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)           # 展开需要推理，默认开
@@ -22,20 +21,20 @@ N_MIN, N_MAX = 2, 4
 
 SYS = f'''你在为一道题构建评估标准的第一层结构。分两件事做。
 
-【第一件：抽上下文标签】
-- intent：提问者的真实目的。不是复述题面，而是判断他实际要解决什么。
-  例：「Brep的结构是什么样的」→ intent 是「理解边界表示法的数据组织方式，
-  多半为了写几何处理代码或读懂 CAD 内核」，而不是「想知道 Brep 结构」。
-- 隐性约束：题面没写但答案必须满足的条件，三项：
-  - audience：答案该按什么水平的人来写（判断依据是提问用词的专业程度）
-  - format：期望的组织形式（步骤/对比/推导/清单/代码），题面没暗示就填「不限」
-  - risk_boundary：答错或答偏的代价。医疗、法律、金融、安全类要写明；
-    纯知识题填「无特殊风险」
+【第一件：整理题面上下文】
+- intent：用一句话归纳题面明确要求完成的任务，不推测未陈述的用途、身份、动机或偏好。
+  例：「Brep的结构是什么样的」→ intent 是「解释 Brep 的结构」，不要补成
+  「为了写几何处理代码或读懂 CAD 内核」。
+- explicit_constraints：只记录题面有文字依据的约束，三项：
+  - audience：题面明确指定的受众；未指定填「未指定」
+  - format：题面明确要求的组织或输出格式；未指定填「不限」
+  - risk_boundary：题面明确涉及的风险、禁止事项或适用边界；未指定填「未指定」
+这些标签只用于忠实整理题面，不得据此新增评分要求。
 
 【第二件：拆 ℓ=1 层 Scenarios】
-把这道题拆成 {N_MIN}-{N_MAX} 个「评价场景」——即一份好回答需要分别站得住脚的几个面向。
+把这道题拆成 {N_MIN}-{N_MAX} 个「评价场景」——即题面明确任务中需要分别评价的几个面向。
 
-场景**必须从 intent 和隐性约束推出**，不能是题面关键词的同义改写。
+场景必须能回指题面中的要求或必要组成，不从猜测的用途和偏好推出。
 反例：题问「合同负债和应付账款的区别」，拆出「合同负债场景」「应付账款场景」——
 这是把题面切碎，不是场景。
 正例：拆出「会计科目定义的准确性」「二者在报表中的归属判断」
@@ -45,7 +44,7 @@ SYS = f'''你在为一道题构建评估标准的第一层结构。分两件事�
 
 只输出 JSON：
 {{"intent": "一句话，不超过60字",
-  "implicit_constraints": {{"audience": "...", "format": "...", "risk_boundary": "..."}},
+  "explicit_constraints": {{"audience": "...", "format": "...", "risk_boundary": "..."}},
   "scenarios": [{{"name": "不超过12字", "desc": "这个场景下什么样的回答算站得住，不超过40字"}}]}}'''
 
 
@@ -53,7 +52,7 @@ def build(r):
     q = r.get('query_eff') or r['question']
     subj = ' / '.join(r.get('subject') or []) or '未标注'
     return [{'role': 'system', 'content': SYS},
-            {'role': 'user', 'content': f'【学科】{subj}\n\n【题目】\n{q}'}]
+            {'role': 'user', 'content': f'【学科】{subj}\n\n{task_input.prompt_context(r, question=q)}'}]
 
 
 def main():
@@ -73,7 +72,8 @@ def main():
             out.append({'scenario_id': f'{r["rid"]}-s{i + 1}',   # id 由代码定，不信模型
                         'name': str(s.get('name', ''))[:40],
                         'desc': str(s.get('desc', ''))[:120]})
-        ic = obj.get('implicit_constraints') or {}
+        # 内部字段名暂留 implicit_constraints，兼容已有下游数据契约。
+        ic = obj.get('explicit_constraints') or obj.get('implicit_constraints') or {}
         return {**r, 'intent': obj.get('intent', ''),
                 'implicit_constraints': {k: str(ic.get(k, ''))[:80]
                                          for k in ('audience', 'format', 'risk_boundary')},

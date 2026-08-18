@@ -21,8 +21,8 @@
 **verifiable 题要另造对抗档**：截断和删论点对数学题没意义，要造「答案错但过程
 看似完整」的回复 —— 这才是 gated_answer 真正要防的钻空子方式。
 
-**硬约束第 1 条**：待评回复 ≠ 锚定回复。强档只用 s05_ground 没用过的那条
-（s05_ground 已把 anchor_key 写进记录，这里排除它）。单回复题标 pool_shared。
+候选回答只在 rubric 冻结后的实测阶段使用。强档从候选回答中确定性选择最长的一条，
+不把任何候选回答视为锚点、标准答案或 rubric 来源。
 
 档位设计（每题 6 条）：
     strong    现成强回复（排除锚）    —— 上界参照
@@ -44,7 +44,7 @@
   D. cut 删除量 <8% 自动重试一次（强化删除量指令）；仍不达标标 degraded。
   E. 两趟执行：mid/weak/adv/strong_regen 先跑，定稿 strong 后再造 cut——
      cut 必须基于最终 strong，退化题重生成后截断/删点才不会错位。
-  F. （2026-08-14 傍晚）canon 缺失时的 LLM 复核：s05_ground 没抽出 canonical
+  F. canon 缺失时的 LLM 复核：独立答案阶段没有给出可程序核验 canonical
      答案的题（48 题里 11/16 道 gated），程序化反向核验无从下手。用 judge
      角色模型做**相对判定**——拿 strong 档当参考答案，只比较最终结论：
      - adv（verifiable 无 canon）：「对抗档的最终结论是否与强档一致/正确」
@@ -176,22 +176,16 @@ SYS_CHECK_WEAK_GATED = '''你在检查一份「弱档回答」的造法是否失
 
 
 def strong_of(r):
-    """强档 = 现成回复里排除锚定那条。硬约束第 1 条：待评 ≠ 锚。
+    """Select the longest candidate as the measured strong response.
 
-    多条候选时取**最长**的那条：strong 是所有比较的上界参照，
-    实测 q0007 的 gpt55 回复只有 48 字（锚 656 字），拿 48 字当上界，
-    弱档轻易追平，Hackable 判定失真。
+    Selection is deterministic and happens after rubric freeze. It does not grant the
+    candidate answer any authority over rubric content or canonical truth.
     """
     refs = r.get('ref_responses') or {}
-    anchor = r.get('anchor_key', '')
-    keys = [k for k in sorted(refs) if k != anchor]
+    keys = [k for k in sorted(refs) if isinstance(refs[k], str) and refs[k].strip()]
     if keys:
-        k = max(keys, key=lambda x: len(str(refs[x] or '')))
-        return k, str(refs[k] or ''), False
-    # 单回复题：只能与锚共用，显式标记，不静默降级
-    keys = sorted(refs)
-    if keys:
-        return keys[0], str(refs[keys[0]] or ''), True
+        k = max(keys, key=lambda x: len(refs[x]))
+        return k, refs[k], len(keys) < 2
     return '', '', False
 
 
@@ -204,11 +198,6 @@ def strong_degenerate(r, strong):
     n = len(strong.strip())
     if n < MIN_STRONG:
         return True, f'strong 仅 {n} 字，短于下限 {MIN_STRONG}'
-    refs = r.get('ref_responses') or {}
-    ak = r.get('anchor_key', '')
-    na = len(str(refs.get(ak) or ''))
-    if na and n * 2 < na:
-        return True, f'strong {n} 字 < 锚 {na} 字的一半，锚才是更好的回答'
     return False, ''
 
 

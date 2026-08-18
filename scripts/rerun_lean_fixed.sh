@@ -1,46 +1,18 @@
 #!/bin/bash
-# lean 主线一键重跑：s05_ground → s04_rubric → s11_diagnose → s11b_remedy
+# rubric 结构线：s04_rubric → s11_diagnose → s11b_remedy
 #   → s04b_split → s04c_severity → 导出
 # 前置：s00-s03 已跑完（s03_perspective_lean.jsonl 存在）。
+# rubric 生成只读取原始 system/developer/user 指令、题目和评价轴。
+# 候选回答及独立 canonical answer 只在 rubric 冻结后的 Phase 4 使用。
 # 用法: bash scripts/rerun_lean_fixed.sh
-#
-# 2026-08-17 修复：s05_ground（锚定 grounding）进主链。此前它是手动单独跑的
-#   （读 s03 输出、写 s05_grounded，s04 再读 s05_grounded），但没固化进脚本 ——
-#   s04 没锚时静默退化成凭记忆写数值（事实错误复发），s10 无 anchor_key 硬约束 1
-#   失效，s12 无 answer_canonical 程序化核验退化。链：s03 → s05_ground → s04。
-#
-# 2026-08-13 改版：
-#   - 删掉原第 5 步的临时 heredoc。那段从 data/s04_rubric.jsonl（**未经诊断**）
-#     导出交付文件，导致 s11_diagnose/s11b_remedy 跑了但产出没进交付 —— 交付版里
-#     2452 条准则一条没过 RIFT，缺 rubric_form / is_gate / blocks / 血缘。
-#   - 改为调 export_advisor_schema.py --src <流水线末端>
-#
-# 2026-08-14 改版：
-#   - 补第 6 步 s04c_severity（负项分级 + veto 标记），导出源随之后移。
-#     导出源必须始终指向流水线末端 —— 指向中间步会静默丢掉后续产出，
-#     这个坑已经踩过两次（RIFT 未生效、severity/veto 全空）。
 
 set -e  # 遇错即停
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO"
 
-# grounder 无 family 硬约束；解析顺序：RP_M_GROUND 环境变量 > config 里 roles
-# 含 "grounder" 的模型 > 兜底 deepseek（原 452 题全量口径是 by-ground=claude-opus-5，
-# 想在 config 里单独配 ground 模型，就给它加 "grounder" 角色）。
-if [ -z "${RP_M_GROUND:-}" ]; then
-    RP_M_GROUND=$(python3 - <<'PYEOF'
-import json
-cfg = json.load(open('config/models.json', encoding='utf-8'))
-gs = [m['name'] for m in cfg if 'grounder' in (m.get('roles') or [])]
-print(gs[0] if gs else 'deepseek')
-PYEOF
-)
-fi
-export RP_M_GROUND
-
 echo "=== lean 主线重跑 ==="
-echo "工作目录: $REPO  (grounder=$RP_M_GROUND)"
+echo "工作目录: $REPO"
 echo
 
 # ---- 1. 备份旧产出 ----
@@ -51,25 +23,20 @@ if [ -f outputs/rubrics_advisor_lean.jsonl ]; then
 fi
 echo
 
-# ---- 2. 锚定 grounding（s05）----
-# 清缓存请显式指定：RP_CLEAN=1 bash scripts/rerun_lean_fixed.sh
+# ---- 2. 准则直出（候选回答隔离）----
+# rubric 生成只读取题目、题面约束和视角；ref_responses 是后续待评分对象，
+# 不得进入 s01-s04。独立答案在 Stage 20 解析，且不回流 rubric。
 if [ "${RP_CLEAN:-0}" = "1" ]; then
-    echo "  RP_CLEAN=1，清理 cache/s05L/ cache/s04L/ cache/s11L_*/"
-    rm -rf cache/s05L/ cache/s04L/ cache/s11L_subj/ cache/s11L_atom/ cache/s11L_ungr/
+    echo "  RP_CLEAN=1，清理 cache/s04L/ cache/s11L_*/"
+    rm -rf cache/s04L/ cache/s11L_subj/ cache/s11L_atom/ cache/s11L_ungr/
 fi
 
-echo "[2/8] 锚定 grounding (s05_ground.py，读 s03 视角输出)..."
-RP_S05L_SRC=s03_perspective_lean.jsonl RP_S05L_OUT=s05_grounded.jsonl \
-  python3 stages/s05_ground.py
-echo "  ✓ data/s05_grounded.jsonl（anchors / answer_canonical / anchor_key）"
-echo
-
-# ---- 3. 准则直出（带锚）----
-echo "[3/8] 准则直出 (s04_rubric.py，读 s05_grounded 带锚生成)..."
-RP_S04L_SRC=s05_grounded.jsonl python3 stages/s04_rubric.py
+echo "[2/8] 准则直出（只读 s03 题目视角，不读取候选回答）..."
+RP_S04L_SRC=s03_perspective_lean.jsonl python3 stages/s04_rubric.py
 echo "  ✓ data/s04_rubric.jsonl"
 echo
 
+# ---- 3. 预留编号：rubric 已冻结；候选回答只在后续 judge/实测阶段使用 ----
 # ---- 4. RIFT 诊断 ----
 echo "[4/8] RIFT 诊断 (s11_diagnose.py)..."
 python3 stages/s11_diagnose.py

@@ -167,16 +167,12 @@ def build(r, action, info):
     return None
 
 
-def anchor_reachable(m, r):
-    """地板题前置门二：参考回复（锚）能不能在这份 rubric 上拿到分。
+def candidate_reachable(m, r):
+    """Check whether any post-freeze candidate demonstrates rubric reachability.
 
-    rubric 本来就是从参考回复推出来的。若锚能拿到 ≥30%，说明准则是可满足的，
-    地板信号来自 pool 的 strong 档不如锚 —— 那是 pool 侧问题，放松准则会把
-    本来好用的 rubric 改坏。388 全量实测：8 道复测后仍地板的题里 6 道属此类
-    （锚拿到 50%~100%），只有 q0020/q0279 是连锚都拿不到分的真过严。
-
-    返回 (reachable: bool, best_rate: float|None)。判不出来时按 False 放过
-    （不阻断原有的放松处置）。
+    This is measurement evidence only. Candidate responses do not define the rubric or
+    canonical truth. If one reaches 30%, a floor signal may come from pool construction,
+    so automatically relaxing the rubric would be premature.
     """
     refs = r.get('ref_responses') or {}
     texts = [v for _, v in sorted(refs.items()) if isinstance(v, str) and v.strip()]
@@ -197,7 +193,7 @@ def anchor_reachable(m, r):
 
 
 def judge_msgs(r, text, rubrics):
-    """复用 s12_judge 的判分口径 —— 换一套标准去测锚，结论就没有可比性。"""
+    """复用 s12_judge 的判分口径，保持候选可达性与实测得分可比。"""
     return s12.build(r, {'text': text}, rubrics)
 
 
@@ -362,10 +358,10 @@ def main():
             ok, why = check_on_target(m, r)
             if not ok:
                 return rid, None, f'strong 档答偏题：{why}', 'off_target'
-            # 锚能拿到分 → 准则可满足，地板来自 pool 侧，不动 rubric
-            reach, best = anchor_reachable(m, r)
+            # 冻结后候选回答能拿到分，说明地板可能来自 pool 构造，不自动放松 rubric
+            reach, best = candidate_reachable(m, r)
             if reach:
-                return rid, None, f'参考回复在本 rubric 上得 {best:.0%}，准则可满足', 'anchor_ok'
+                return rid, None, f'候选回答在本 rubric 上得 {best:.0%}，准则可达到', 'candidate_ok'
         msgs = build(r, action, info)
         last = None
         for attempt in range(2):
@@ -388,7 +384,7 @@ def main():
     failed = {jobs[index]: str(message)[:500] for index, message in errs}
     # 答偏题的地板题：不重写，记原因
     off_target = {rid: note for rid, rubs, note, err in done
-                  if not rubs and err in ('off_target', 'anchor_ok')}
+                  if not rubs and err in ('off_target', 'candidate_ok')}
 
     res, n_ok = [], 0
     for r in recs:

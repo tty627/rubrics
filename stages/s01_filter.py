@@ -9,14 +9,13 @@
    多子题、MCQ 准；首字截断约 10% 真阳（「是/的/在」开头的正常句子会大量误报），
    所以检测结果只作为提示喂给模型，不直接定性。宁漏不错。
 
-判定取闭集五类，默认直通。改写会打破 query 与既有参考回复的对齐，
-因此把参考回复片段一并给模型：改到回复不再切题就该判弃用，而不是强行改。
+判定取闭集五类，默认直通。候选回答不参与题目质量判定或改写。
 """
 import os, re, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage
+from lib import stage, task_input
 
 VERDICTS = ['直通', '改写-截断补全', '改写-指代消解', '改写-拆分', '弃用']
 WORKERS = int(os.environ.get('RP_WORKERS', 20))
@@ -29,14 +28,13 @@ SYS = '''你是评测数据的入口质检员。判定一条真人 query 是否�
 - 改写-截断补全：query 明显首部或尾部被截断，补全后语义完整
 - 改写-指代消解：query 含无先行词的指代（「这个」「上述」「该方法」），须替换为具体所指
 - 改写-拆分：query 含多个互不相关的子问题，需要拆开才能分别评分
-- 弃用：无法通过最小改动使其可评分，或改写后与既有参考回复不再对齐
+- 弃用：无法通过最小改动使其成为一条自洽、可评分的任务
 
 判定原则，严格遵守：
 1. **默认直通**。只有「缺陷使评分无法进行」才改。表达不优雅、口语化、缺礼貌用语、
    排版混乱、有错别字——全都直通，不算缺陷。
 2. **最小改动**。改写只补必要成分，不重组句子、不润色、不扩写。
-3. **对齐优先**。给你的参考回复是针对原 query 写的。若你的改写会让这条回复变得
-   不切题，说明改动过大，应判弃用或退回直通。
+3. **约束保持**。改写不得删除或改变原始 system/developer/user 消息中的明确约束。
 4. 多个子问题若属于同一主题的递进追问（如「什么是 A？A 和 B 的区别？」），
    属于正常提问，判直通；只有互不相关的多个任务才判改写-拆分。
 5. 检测器提示只是线索，不是结论。大部分命中都是误报，你要自己看 query 本身。
@@ -68,11 +66,9 @@ def detect(q):
 
 def build(r):
     q = r['question']
-    ref = next(iter(r['ref_responses'].values()), '')
     hits = detect(q)
-    u = [f'【query】\n{q}\n']
-    if ref:
-        u.append(f'【针对该 query 的参考回复（节选，判断对齐用）】\n{ref[:600]}\n')
+    u = [task_input.prompt_context(r, question=q),
+         '【候选回答隔离】本步骤只判断题目是否可评分，不读取任何待评分回答。\n']
     u.append(f'【检测器命中（仅线索，多为误报）】{hits or "无"}')
     return [{'role': 'system', 'content': SYS},
             {'role': 'user', 'content': '\n'.join(u)}], hits

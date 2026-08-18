@@ -9,7 +9,7 @@
 
 **gated_answer 的答案项走程序化核验**：数学答案精确匹配、代码看输出，
 不必过 LLM。这是 RLVR 的做法，比 LLM 判分更可靠也更便宜。
-判定依据是 s05_ground 抽出的 `answer` 字段（有锚点真值才敢这么做）。
+判定依据只接受独立答案求解阶段从原始任务指令生成的 answer 字段。
 命中程序化核验的准则记 `by_program=True`，与 LLM 判的分开统计。
 
 **消除位置偏差**：同一批判分固定准则顺序（按 _criterion_id 排序）与呈现顺序。
@@ -69,7 +69,7 @@ idx 对应下方准则的编号，必须每条都给。'''
 #   q0303  正确答案是对抗回复的子串（对抗档末尾多加了 ",1"）→ 答错却判对
 #   q0048  answer 存的是整句话「将 host 配置为 0.0.0.0，例如 uvicorn ...」，
 #          强档回复写了 --host 0.0.0.0 但措辞不同 → 答对却判错，闸门项直接清零
-# 现在改为按 s05_ground 给出的 answer_kind 分策略，且只认 answer_canonical（最小可判定串）。
+# 只认独立求解阶段给出的 answer_kind / answer_canonical（最小可判定串）。
 # 2026-08-14 修复（48 试点审计）：
 #   - option 正则负向断言禁止字母后跟句点 → `A.` 永不命中（q0179 闸门清零）
 #   - 短数字（≤2 位）全文本匹配被公式常数命中（q0166 canon='2' 命中 '2π'）
@@ -189,7 +189,8 @@ def main():
         kind = r.get('answer_kind', 'none')
         canon = (r.get('answer_canonical') or '').strip()
         if (r.get('rubric_form') == 'gated_answer' and canon
-                and r.get('answer_sound', True)):
+                and r.get('answer_source') == 'independent_solver'
+                and r.get('answer_sound', False)):
             # 闸门判定口径 = lib/rubric.gate_indices
             # （与 s11b_remedy 豁免、交付档 is_gate 同一规则），下标转 1 起对齐 idx
             gates = [i + 1 for i in rubric.gate_indices(rubrics)]

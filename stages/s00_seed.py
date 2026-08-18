@@ -4,10 +4,12 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import xlsx
+from lib import task_input
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 XLSX = os.environ.get('RP_XLSX', os.path.join(_ROOT, 'data', 'input.xlsx'))
 OUT = os.environ.get('RP_OUT', os.path.join(_ROOT, 'data'))
+SOURCE_JSONL = os.environ.get('RP_SOURCE_JSONL', '')
 
 # xlsx 列映射：按你实际表的表头顺序调整，或设表头行自动读取
 # 当前假定：A=need_rewrite, B=rewritten, C=gen_rubric, D=question,
@@ -23,6 +25,7 @@ def main():
     print(f'表头: {[hdr.get(i, "") for i in range(7)]}')
     print(f'数据行: {len(data)}')
 
+    source_index = task_input.load_source_index(SOURCE_JSONL)
     recs, bad = [], 0
     for i, r in enumerate(data):
         rid = f'q{i + 2:04d}'          # 与 xlsx 行号对齐，便于回查
@@ -40,15 +43,18 @@ def main():
             refs = json.loads(r.get(COL['ref_response'], '') or '{}')
         except Exception:
             pass
-        recs.append({
+        rec = {
             'rid': rid, 'xlsx_row': i + 2,
             'question': r.get(COL['question'], ''),
             'subject': dims,
             'draft_rubric': draft,
             'ref_responses': {k: v for k, v in refs.items() if not k.endswith('_error')},
             'ref_errors': [k for k in refs if k.endswith('_error')],
-        })
+        }
+        recs.append(task_input.attach_source_messages(rec, source_index))
     print(f'draft_rubric 解析失败: {bad}')
+    status = Counter(r['task_message_status'] for r in recs)
+    print(f'原始消息匹配: {dict(status)}')
 
     with open(f'{OUT}/seed.jsonl', 'w', encoding='utf-8') as f:
         for r in recs:

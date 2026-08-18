@@ -15,7 +15,7 @@ import json, os, sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from lib import stage
+from lib import stage, task_input
 
 WORKERS = int(os.environ.get('RP_WORKERS', 20))
 THINK = stage.envflag('RP_THINK', True)
@@ -88,7 +88,8 @@ def norm_block(b, bid):
 def build(r):
     q = r.get('query_eff') or r['question']
     subj = ' / '.join(r.get('subject') or []) or '未标注'
-    u = f'【学科】{subj}\n【提问意图】{r.get("intent", "")}\n\n【题目】\n{q[:4000]}'
+    u = (f'【学科】{subj}\n【提问意图】{r.get("intent", "")}\n\n'
+         f'{task_input.prompt_context(r, question=q, max_chars=8000)}')
     return [{'role': 'system', 'content': SYS}, {'role': 'user', 'content': u}]
 
 
