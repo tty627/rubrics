@@ -39,39 +39,77 @@ def state_of(s, w):
     return 'win' if s > w else ('rev' if s < w else 'tie')
 
 
+def canonical_round_name(name):
+    """兼容早期 s11Lc 拼写，所有新产物统一使用 s11c。"""
+    return str(name or '').replace('s11Lc', 's11c')
+
+
+def valid_rate(value):
+    return isinstance(value, (int, float))
+
+
 def main():
     all452 = {r['rid']: r for r in stage.read_jsonl('s11e_all452.jsonl')}
     rounds = {}
     for fn in ROUND_FILES:
         try:
-            rounds[fn] = {r['rid']: r for r in stage.read_jsonl(fn)}
+            rounds[canonical_round_name(fn)] = {r['rid']: r for r in stage.read_jsonl(fn)}
         except FileNotFoundError:
-            rounds[fn] = {}
+            rounds[canonical_round_name(fn)] = {}
     draft = {r['rid']: r for r in stage.read_jsonl('s12b_draft388.jsonl')}
 
     p4 = {rid: r for rid, r in all452.items()
-          if (r.get('_s11Le') or {}).get('chosen_round') not in
-          (None, '未参与 Phase 4（单回复题）')}
+          if (r.get('_s11Le') or {}).get('chosen_round')
+          not in (None, '', '未参与 Phase 4（单回复题）')}
     print(f'Phase 4 实测题: {len(p4)}')
 
     rows = []
     for rid, r in sorted(p4.items()):
         le = r.get('_s11Le') or {}
         chosen = le.get('chosen_round', '')
-        src = rounds.get(chosen, {}).get(rid)
+        chosen_norm = canonical_round_name(chosen)
+        src = rounds.get(chosen_norm, {}).get(rid)
         d = draft.get(rid)
-        row = {'rid': rid, 'chosen_round': chosen, 'excluded': False,
-               'exclude_reason': ''}
+        row = {'rid': rid, 'chosen_round': chosen,
+               'chosen_round_normalized': chosen_norm,
+               'source_available': bool(src), 'draft_available': bool(d),
+               'excluded': False, 'exclude_reason': ''}
         n = (src or {}).get('judged') or {}
         ns, nw = n.get('strong'), n.get('weak')
         dj = (d or {}).get('draft_judged') or {}
         ds, dw = dj.get('strong'), dj.get('weak')
 
+        reasons = []
         if le.get('skipped'):
-            row.update(excluded=True, exclude_reason='skip_测量受限')
-        elif not ns or not nw or not ds or not dw:
-            row.update(excluded=True, exclude_reason='缺判分')
-        else:
+            reasons.append('skip_测量受限')
+        elif not src:
+            reasons.append(f'缺终态轮次记录 {chosen_norm or "（空）"}')
+        elif not ns or not nw:
+            reasons.append('缺新 rubric 判分 strong/weak')
+        elif any(x.get('judge_error') for x in (ns, nw)):
+            reasons.append('新 rubric 判分任务失败')
+        elif any(x.get('judge_incomplete') for x in (ns, nw)):
+            reasons.append('新 rubric judge_incomplete')
+        elif not all(valid_rate(x.get('rate')) and valid_rate(x.get('raw_rate'))
+                     for x in (ns, nw)):
+            reasons.append('新 rubric 得分率无效')
+
+        if not d:
+            reasons.append('缺草稿记录')
+        elif (d.get('_checkpoint2') or {}).get('excluded'):
+            reasons.append('草稿侧已排除：' +
+                           str((d.get('_checkpoint2') or {}).get('exclude_reason', '')))
+        elif not ds or not dw:
+            reasons.append('缺草稿判分 strong/weak')
+        elif any(x.get('judge_error') for x in (ds, dw)):
+            reasons.append('草稿判分任务失败')
+        elif any(x.get('judge_incomplete') for x in (ds, dw)):
+            reasons.append('草稿 judge_incomplete')
+        elif not all(valid_rate(x.get('rate')) and valid_rate(x.get('raw_rate'))
+                     for x in (ds, dw)):
+            reasons.append('草稿得分率无效')
+
+        if not reasons:
             row.update(
                 n_strong=ns['rate'], n_weak=nw['rate'],
                 n_strong_raw=ns['raw_rate'], n_weak_raw=nw['raw_rate'],
@@ -82,13 +120,16 @@ def main():
                 n_state=state_of(ns['rate'], nw['rate']),
                 d_state=state_of(ds['rate'], dw['rate']),
             )
-            if ns.get('judge_incomplete') or nw.get('judge_incomplete') \
-                    or ds.get('judge_incomplete') or dw.get('judge_incomplete'):
-                row.update(excluded=True, exclude_reason='judge_incomplete')
+        else:
+            row.update(excluded=True, exclude_reason='；'.join(dict.fromkeys(reasons)))
         rows.append(row)
 
+    stage.write_jsonl(OUT, rows)
     inc = [r for r in rows if not r['excluded']]
     n = len(inc)
+    if n == 0:
+        print('❌ 检查点 2 没有可测 pair，已写出逐题排除原因；不能判定通过。')
+        raise SystemExit(2)
 
     def agg(states, gaps):
         c = Counter(states)
@@ -137,8 +178,9 @@ def main():
     print(f'\n  raw_rate 口径（无 veto）: 判别 {sraw["win"]} 平局 {sraw["tie"]} '
           f'反转 {sraw["rev"]} / {n}')
 
-    stage.write_jsonl(OUT, rows)
     print(f'  逐题明细 → {OUT}')
+    if not (pass1 and pass2):
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

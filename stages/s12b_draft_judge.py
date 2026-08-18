@@ -142,27 +142,28 @@ def main():
               '建议 RP_M_JUDGE=cn-judge')
 
     by_rid = {r['rid']: r for r in recs}
-    jobs = [(r['rid'], t) for r in recs for t in TIERS
-            if any(p['tier'] == t for p in r.get('pool') or [])]
-    nodraft = [r['rid'] for r in recs if not (r.get('draft_rubric') or {}).get('rubrics')]
+    nodraft = {r['rid']: '缺草稿 rubric'
+               for r in recs if not (r.get('draft_rubric') or {}).get('rubrics')}
     if nodraft:
-        print(f'  ⚠️ 缺草稿 rubric: {len(nodraft)} 题: {nodraft[:10]}')
-    print(f'  判分任务: {len(jobs)} (388 × strong/weak)')
+        print(f'  ⚠️ 缺草稿 rubric: {len(nodraft)} 题: {list(nodraft)[:10]}')
+    jobs = [(r['rid'], t) for r in recs for t in TIERS
+            if r['rid'] not in nodraft
+            and any(p['tier'] == t for p in r.get('pool') or [])]
+    print(f'  判分任务: {len(jobs)} (仅有草稿且有 strong/weak 的题)')
 
     done, errs = stage.run(one, jobs, workers=WORKERS, desc='s12Lb')
     agg = defaultdict(dict)
-    for rid, tier, res in done:
-        if res is None:
+    for rid, tier, result in done:
+        if result is None:
             continue
-        items, score, missing = res
+        items, score, missing = result
         s_max = sum(c['score'] for c in draft_rubrics(by_rid[rid])
                     if c['is_positive'])
-        raw = sum(x['score'] for x in items if x['met'])
         agg[rid][tier] = {
-            'score': raw, 's_max': s_max,
-            'raw_rate': rubric.rate(raw, s_max),
+            'score': score, 's_max': s_max,
+            'raw_rate': rubric.rate(score, s_max),
             'vetoed': False, 'veto_by': [],
-            'rate': rubric.rate(raw, s_max),
+            'rate': rubric.rate(score, s_max),
             'judge_incomplete': bool(missing),
             'n_missing': len(missing),
             'n_met': sum(1 for x in items if x['met'] and x['is_positive']),
@@ -171,20 +172,58 @@ def main():
             'n_veto': 0,
             'items': items}
 
+    failed_jobs = {}
+    for index, message in errs:
+        rid, tier = jobs[index]
+        failed_jobs[(rid, tier)] = str(message)[:500]
+    for (rid, tier), message in failed_jobs.items():
+        rubrics = draft_rubrics(by_rid[rid])
+        missing = list(range(1, len(rubrics) + 1))
+        s_max = sum(c['score'] for c in rubrics if c['is_positive'])
+        agg[rid][tier] = {
+            'score': 0.0, 's_max': s_max,
+            'raw_rate': None, 'rate': None, 'vetoed': False, 'veto_by': [],
+            'judge_incomplete': True, 'n_missing': len(missing),
+            'n_met': 0, 'n_pos': sum(1 for c in rubrics if c['is_positive']),
+            'n_penalty': 0, 'n_veto': 0, 'items': [],
+            'judge_error': message}
+
     res = []
     for r in recs:
         dr = draft_rubrics(r)
         s_max = sum(c['score'] for c in dr if c['is_positive'])
-        res.append({**r, 'draft_s_max': s_max,
-                    'draft_rubrics': dr, 'draft_judged': dict(agg[r['rid']])})
+        reasons = []
+        if r['rid'] in nodraft:
+            reasons.append(nodraft[r['rid']])
+        pool_tiers = {p['tier'] for p in r.get('pool') or []}
+        for tier in TIERS:
+            if tier not in pool_tiers:
+                reasons.append(f'缺回复档 {tier}')
+        if any(rid == r['rid'] for rid, _ in failed_jobs):
+            reasons.append('判分任务失败')
+        rec = {**r, 'draft_s_max': s_max,
+               'draft_rubrics': dr, 'draft_judged': dict(agg[r['rid']])}
+        if reasons:
+            rec['_checkpoint2'] = {'excluded': True,
+                                   'exclude_reason': '；'.join(dict.fromkeys(reasons))}
+        own_errors = [stage.error_entry('s12Lb', tier, message)
+                      for (rid, tier), message in failed_jobs.items()
+                      if rid == r['rid']]
+        res.append(stage.add_stage_errors(rec, own_errors))
     stage.write_jsonl(OUT, res)
 
     print(f'\n=== 步骤 12b 结果 ===')
     if errs:
-        print(f'  失败: {len(errs)} 条')
+        print(f'  失败: {len(errs)} 条，已写入 draft_judged[*].judge_error 和 _stage_errors')
+        for index, message in errs[:12]:
+            rid, tier = jobs[index]
+            print(f'    {rid}/{tier}: {str(message)[:120]}')
+    if nodraft:
+        print(f'  检查点 2 显式排除无草稿题: {len(nodraft)}')
     for tier in TIERS:
         rs = [r['draft_judged'][tier]['rate'] for r in res
-              if tier in r['draft_judged']]
+              if tier in r['draft_judged']
+              and isinstance(r['draft_judged'][tier].get('rate'), (int, float))]
         if rs:
             print(f'    {tier:<8} mean={sum(rs)/len(rs):6.1%}  '
                   f'min={min(rs):6.1%}  max={max(rs):6.1%}  (n={len(rs)})')
@@ -194,6 +233,10 @@ def main():
         print(f'  ⚠️ 判分器漏返回: {len(inc)} 处: '
               + ', '.join(f'{a}/{b}({c})' for a, b, c in inc[:8]))
     print(f'  n_criteria 分布: {Counter(len(r["draft_rubrics"]) for r in res).most_common(6)}')
+    excluded = Counter((r.get('_checkpoint2') or {}).get('exclude_reason', '')
+                       for r in res if r.get('_checkpoint2'))
+    if excluded:
+        print(f'  检查点 2 排除原因: {dict(excluded)}')
 
 
 if __name__ == '__main__':

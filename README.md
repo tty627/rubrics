@@ -76,6 +76,26 @@ python3 scripts/audit_rubrics.py                  # 交付档审计
 
 每步独立读写 `data/` 下的 jsonl，任一步可单独重跑。LLM 调用按 `model + prompt + params` 哈希缓存到 `cache/<stage>/`，改一个 prompt 只重算受影响的哈希。
 
+### 失败记录与手动重跑
+
+并发 stage 不再把失败项当成「不存在」：`lib/stage.run()` 保留输入下标和错误，并追加到 `data/_stage_errors.jsonl`（可用 `RP_FAILURE_MANIFEST` 指定路径）。Phase 4 产物还会把它们写回 JSONL。不要只看文件行数，必须同时检查档位完整性。
+
+- 记录级失败写在 `_stage_errors`：`[{"stage": "s12L", "key": "strong", "error": "..."}]`。
+- 回复池失败写在 `pool_errors`；正式/草稿判分失败写在 `judged[tier].judge_error` 或 `draft_judged[tier].judge_error`。
+- 草稿缺失不会被当成 0 分：`s12b_draft_judge.py` 写 `_checkpoint2.exclude_reason=缺草稿 rubric`，`s12c_pairwise.py` 会逐题保留并排除。
+- `s12c_pairwise.py` 总是写出每道 Phase 4 题的 `excluded` / `exclude_reason`。退出码 `0` = 放行，`1` = 有可测 pair 但判据未通过，`2` = 没有可测 pair，不能误判为通过。
+- `s11c_consequential.py` 遇到缺档、判分失败或不完整判分时写 `skip_reason`，不会把该题算成无缺陷；早期产物中的 `s11Lc` 轮次名会自动兼容为 `s11c`。
+
+手动重跑时按以下顺序确认：
+
+```bash
+make check
+bash scripts/rerun_phase4.sh
+bash scripts/rerun_checkpoint2.sh
+```
+
+如果终端报告失败，先查看对应 JSONL 的 `_stage_errors` / `pool_errors` / `judge_error` 和检查点明细，再按失败的 stage 重跑；修复或服务恢复后，缓存会复用成功任务，不需要盲目清空全部缓存。
+
 ## 项目结构
 
 ### 目录
@@ -85,7 +105,7 @@ rubrics/
 ├── stages/         流水线 20 个 stage，每步独立读写 data/*.jsonl，任一步可单独重跑
 ├── lib/            基础库 7 个：xlsx / llm / config / stage / dimensions / rubric / answer_check
 ├── scripts/        一键与分步入口、导出、审计、xlsx 填充
-├── tests/          语义核心纯逻辑单测（零 LLM）：test_rubric / test_s04_flags
+├── tests/          语义与流水线完整性单测（零 LLM）：test_rubric / test_s04_flags / test_pipeline_integrity
 ├── config/         模型端点配置（models.json 含 api_key，gitignore；example 为模板）
 ├── docs/           design/ 流程定稿与实施计划；reports/ 技术报告
 ├── legacy/         已归档的旧实现（full_path / phase3 / phase4），保留可运行状态
@@ -166,6 +186,7 @@ s04c_severity.jsonl（452）
 | `outputs/rubrics_internal.jsonl` | 内部档：额外带血缘、RIFT 诊断、质量标记 |
 | `outputs/excel/*.xlsx` | 交付档同源的人读版，C 列填 rubric，保留原格式 |
 | `data/s11e_all452.jsonl` | 流水线末端数据源（跑过 Phase 4 后） |
+| `data/_stage_errors.jsonl` | 所有 stage 的失败下标、输入 key 与错误摘要（可按 `RP_FAILURE_MANIFEST` 改路径） |
 
 交付档准则字段：`criteria`（判定文本）、`score`（原始整数权重，正向 1-3、答案项 6-8、负向 -2/-3）、`reason`、`dimension`、`is_positive`（方向）、`is_gate`（gated_answer 题的答案阀门）、`severity` / `is_veto`（只挂负项；veto 命中 → 整题得分率 0）。`full_mark = sum(正向 score)`。看样例：`head -1 outputs/rubrics_advisor_lean.jsonl | python3 -m json.tool`。
 
@@ -192,6 +213,7 @@ s04c_severity.jsonl（452）
 | `RP_RUBRIC_MIN` / `MAX` | 6 / 8 | 每题准则条数预算 |
 | `RP_CLEAN` | 0 | 一键/结构线脚本清缓存 |
 | `RP_EVENTS` | `cache/_events.jsonl` | 调用事件流水，设空串关闭 |
+| `RP_FAILURE_MANIFEST` | `data/_stage_errors.jsonl` | stage 失败清单，设空串关闭 |
 | `RP_<STAGE>_SRC` | 各步默认 | 换输入源，如 `RP_S04LB_SRC` |
 
 模型选择变量见「快速开始」第 4 步的默认模型表。

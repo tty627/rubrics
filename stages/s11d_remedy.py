@@ -385,6 +385,7 @@ def main():
 
     done, errs = stage.run(one, jobs, workers=WORKERS, desc='s11Ld')
     new_rubrics = {rid: rubs for rid, rubs, note, err in done if rubs}
+    failed = {jobs[index]: str(message)[:500] for index, message in errs}
     # 答偏题的地板题：不重写，记原因
     off_target = {rid: note for rid, rubs, note, err in done
                   if not rubs and err in ('off_target', 'anchor_ok')}
@@ -412,12 +413,19 @@ def main():
             if action in ('hackable', 'floor'):
                 rec['rewritten'] = False
                 rec['fail'] = True
-            res.append({**r, 's11Ld': rec})
+            if r['rid'] in failed:
+                rec['stage_error'] = failed[r['rid']]
+            out = {**r, 's11Ld': rec}
+            if r['rid'] in failed:
+                out = stage.add_stage_error(out, 's11Ld', r['rid'], failed[r['rid']])
+            res.append(out)
     stage.write_jsonl(OUT, res)
 
     print(f'\n=== 步骤 11d 结果 ===')
     if errs:
-        print(f'  LLM 失败    : {len(errs)} 题')
+        print(f'  LLM 失败    : {len(errs)} 题，已写入 s11Ld.stage_error 和 _stage_errors')
+        for index, message in errs[:12]:
+            print(f'    {jobs[index]}: {str(message)[:120]}')
     print(f'  重写成功    : {n_ok}/{len(jobs)} 题')
     for r in res:
         d = r['s11Ld']

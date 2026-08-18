@@ -7,6 +7,7 @@ all:              ## 一键全流程（配置好 models.json 与 data/input.xlsx
 check:            ## 静态检查 + 语义核心单测（零 LLM）
 	python3 -m py_compile stages/*.py scripts/*.py lib/*.py tests/*.py
 	python3 tests/test_rubric.py
+	python3 tests/test_pipeline_integrity.py
 
 seed:             ## Phase 0：xlsx → 种子集 + 草稿基线
 	python3 stages/s00_seed.py

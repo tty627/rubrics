@@ -264,6 +264,39 @@ def main():
         agg[rid][tier] = {'items': items, 'score': score, 'missing': missing,
                           'veto_review': veto_review}
 
+    # 失败的任务不能从输出里消失。写成显式 placeholder，后续诊断和检查点
+    # 会排除它，但仍能按 rid/tier 回溯并针对性重跑。
+    failed_jobs = {}
+    for index, message in errs:
+        rid, tier = jobs[index]
+        failed_jobs[(rid, tier)] = str(message)[:500]
+    for (rid, tier), message in failed_jobs.items():
+        rubrics = rubrics_of(by_rid[rid])
+        missing = list(range(1, len(rubrics) + 1))
+        agg[rid][tier] = {
+            'items': [], 'score': 0.0, 's_max': rubric.s_max(rubrics),
+            'raw_rate': None, 'rate': None, 'vetoed': False, 'veto_by': [],
+            'veto_review': {}, 'missing': missing,
+            'judge_incomplete': True, 'n_missing': len(missing),
+            'judge_error': message,
+        }
+
+    # s10_pool 生成失败的档位没有进入 jobs；把它们同样显式挂进 judged，
+    # 防止「回复池少一档」又被下一步解释成普通缺判分。
+    for r in recs:
+        rubrics = rubrics_of(r)
+        for tier, message in (r.get('pool_errors') or {}).items():
+            if tier in agg[r['rid']]:
+                continue
+            missing = list(range(1, len(rubrics) + 1))
+            agg[r['rid']][tier] = {
+                'items': [], 'score': 0.0, 's_max': rubric.s_max(rubrics),
+                'raw_rate': None, 'rate': None, 'vetoed': False, 'veto_by': [],
+                'veto_review': {}, 'missing': missing,
+                'judge_incomplete': True, 'n_missing': len(missing),
+                'judge_error': f's10L 回复池失败：{str(message)[:400]}',
+            }
+
     # ---- 同源一致性护栏（48 试点审计 q0174/q0242/q0287/q0314/q0440）----
     # trunc/cut 是 strong 的字面子集：同一内容在子集档 met、超集档未 met
     # 在逻辑上不可能，只可能是判分器跨档双标（同句一✓一✗）。以 strong 为准
@@ -272,17 +305,20 @@ def main():
     for rid, tiers in agg.items():
         if 'strong' not in tiers:
             continue
-        strong_items = {x['_criterion_id']: x for x in tiers['strong']['items']}
+        strong_items = {x.get('_criterion_id'): x
+                        for x in (tiers['strong'].get('items') or [])
+                        if x.get('_criterion_id')}
         for t in ('trunc', 'cut'):
             j = tiers.get(t)
             if not j:
                 continue
             changed = False
-            for x in j['items']:
-                s = strong_items.get(x['_criterion_id'])
+            for x in (j.get('items') or []):
+                cid = x.get('_criterion_id')
+                s = strong_items.get(cid)
                 if not s or s.get('judge_missing') or x.get('judge_missing'):
                     continue
-                if x['met'] and not s['met']:
+                if x.get('met') and not s.get('met'):
                     x['met'] = False
                     x['judge_fixed'] = True
                     x['reason'] = ('判分一致性修正：该档是强档的字面子集，'
@@ -298,9 +334,14 @@ def main():
         pos = rubric.positives(r.get('rubrics') or [])
         s_max = rubric.s_max(r.get('rubrics') or [])
         scored = {}
-        for p in r.get('pool') or []:
-            j = agg[r['rid']].get(p['tier'])
+        tiers = {p['tier'] for p in r.get('pool') or []}
+        tiers.update((r.get('pool_errors') or {}).keys())
+        for tier in sorted(tiers):
+            j = agg[r['rid']].get(tier)
             if not j:
+                continue
+            if j.get('judge_error'):
+                scored[tier] = dict(j)
                 continue
             raw = sum(x['score'] for x in j['items'] if x['met'])
             met_by = {x['_criterion_id']: x['met'] for x in j['items']}
@@ -309,7 +350,7 @@ def main():
                        if rv.get('confirmed') and met_by.get(cid)]
             vetoed = bool(veto_by)
             raw_rate = rubric.rate(raw, s_max)
-            scored[p['tier']] = {
+            scored[tier] = {
                 'score': raw, 's_max': s_max,
                 'raw_rate': raw_rate,
                 'vetoed': vetoed, 'veto_by': veto_by,
@@ -323,19 +364,27 @@ def main():
                 'n_penalty': sum(1 for x in j['items'] if x['met'] and not x['is_positive']),
                 'n_veto': sum(1 for x in j['items'] if x.get('is_veto')),
                 'items': j['items']}
-        res.append({**r, 's_max': s_max, 'judged': scored})
+        rec = {**r, 's_max': s_max, 'judged': scored}
+        own_errors = [stage.error_entry('s12L', tier, message)
+                      for (rid, tier), message in failed_jobs.items()
+                      if rid == r['rid']]
+        res.append(stage.add_stage_errors(rec, own_errors))
     stage.write_jsonl(OUT, res)
 
     print(f'\n=== 步骤 12 结果 ===')
     if errs:
-        print(f'  失败        : {len(errs)} 条')
+        print(f'  失败        : {len(errs)} 条，已写入 judged[*].judge_error 和 _stage_errors')
+        for index, message in errs[:12]:
+            rid, tier = jobs[index]
+            print(f'    {rid}/{tier}: {str(message)[:120]}')
     n_prog = sum(1 for r in res for t in r['judged'].values()
-                 for x in t['items'] if x['by_program'])
+                 for x in (t.get('items') or []) if x.get('by_program'))
     n_all = sum(len(t['items']) for r in res for t in r['judged'].values())
     print(f'  判定总数    : {n_all}  其中程序化核验 {n_prog} 条'
           f'（gated 答案项，不过 LLM）')
-    n_noev = sum(1 for r in res for t in r['judged'].values() for x in t['items']
-                 if x['reason'].startswith('判 true 但未给证据'))
+    n_noev = sum(1 for r in res for t in r['judged'].values()
+                 for x in (t.get('items') or [])
+                 if str(x.get('reason', '')).startswith('判 true 但未给证据'))
     if n_noev:
         print(f'  ⚠️  判 true 但无证据: {n_noev} 条，已按未满足处理')
     if n_fixed:
@@ -363,21 +412,28 @@ def main():
 
     print(f'\n  各档得分率（raw=补偿式；final=veto 归零后。应当单调下降）:')
     for tier in ('strong', 'mid', 'trunc', 'cut', 'weak', 'adv'):
-        rs = [r['judged'][tier]['rate'] for r in res if tier in r['judged']]
-        if rs:
-            rs_s = sorted(rs)
-            rr = [r['judged'][tier]['raw_rate'] for r in res if tier in r['judged']]
+        pairs = [(r['judged'][tier].get('rate'), r['judged'][tier].get('raw_rate'))
+                 for r in res if tier in r['judged']
+                 and isinstance(r['judged'][tier].get('rate'), (int, float))
+                 and isinstance(r['judged'][tier].get('raw_rate'), (int, float))]
+        if pairs:
+            rs = [x[0] for x in pairs]
+            rr = [x[1] for x in pairs]
             print(f'    {tier:<8} final mean={sum(rs) / len(rs):6.1%}  '
                   f'(raw mean={sum(rr) / len(rr):6.1%})  '
-                  f'min={rs_s[0]:6.1%}  max={rs_s[-1]:6.1%}  (n={len(rs)})')
+                  f'min={min(rs):6.1%}  max={max(rs):6.1%}  (n={len(rs)})')
 
     ex = res[0]
     print(f'\n  抽样 {ex["rid"]} (满分 {ex["s_max"]}):')
     for tier in ('strong', 'mid', 'trunc', 'cut', 'weak', 'adv'):
         j = ex['judged'].get(tier)
-        if j:
-            print(f'    {tier:<8} {j["score"]:3d}/{j["s_max"]} = {j["rate"]:6.1%}  '
+        if not j:
+            continue
+        if isinstance(j.get('rate'), (int, float)):
+            print(f'    {tier:<8} {j["score"]:3g}/{j["s_max"]} = {j["rate"]:6.1%}  '
                   f'满足 {j["n_met"]}/{j["n_pos"]} 条，触发扣分 {j["n_penalty"]}')
+        else:
+            print(f'    {tier:<8} 判分失败/不完整：{j.get("judge_error", "未返回")}')
 
 
 if __name__ == '__main__':

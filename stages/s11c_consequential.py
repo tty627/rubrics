@@ -64,6 +64,22 @@ WEAK_TIERS = ('trunc', 'cut', 'weak')
 
 def diagnose(r):
     j = dict(r.get('judged') or {})
+    expected = {p.get('tier') for p in (r.get('pool') or []) if p.get('tier')}
+    expected.update((r.get('pool_errors') or {}).keys())
+    missing_tiers = sorted(expected - set(j))
+    if missing_tiers:
+        return {'low_signal': None, 'hackable': None,
+                'skip_reason': '判分档缺失：' + ','.join(missing_tiers)}
+    failed_tiers = sorted(t for t, value in j.items()
+                          if value.get('judge_error'))
+    if failed_tiers:
+        return {'low_signal': None, 'hackable': None,
+                'skip_reason': '判分失败：' + ','.join(failed_tiers)}
+    incomplete_tiers = sorted(t for t, value in j.items()
+                              if value.get('judge_incomplete'))
+    if incomplete_tiers:
+        return {'low_signal': None, 'hackable': None,
+                'skip_reason': '判分不完整：' + ','.join(incomplete_tiers)}
     if 'strong' not in j:
         return {'low_signal': None, 'hackable': None,
                 'skip_reason': '无强档，无法比较'}
@@ -99,9 +115,9 @@ def diagnose(r):
         v = j.get(t)
         if not v:
             return None
-        return frozenset(x['_criterion_id'] for x in v['items']
-                         if x.get('is_positive') and x.get('met')
-                         and not x.get('judge_missing'))
+        return frozenset(x['_criterion_id'] for x in (v.get('items') or [])
+                         if x.get('_criterion_id') and x.get('is_positive')
+                         and x.get('met') and not x.get('judge_missing'))
     ss = mset('strong')
     for t in ('trunc', 'cut'):
         if t in j and t not in excluded and ss and mset(t) == ss:
@@ -125,7 +141,11 @@ def diagnose(r):
     # 修复 F：区分度诊断一律用 raw_rate（不含 veto 的补偿式得分率）。
     # veto 命中的档 rate=0，是聚合规则不是 rubric 质量信号，
     # 混进 gap/std/floor 会制造成片假阳性。veto 单独统计。
-    rate = {t: v.get('raw_rate', v.get('rate')) for t, v in j.items()}
+    rate = {t: v.get('raw_rate', v.get('rate')) for t, v in j.items()
+            if isinstance(v.get('raw_rate', v.get('rate')), (int, float))}
+    if 'strong' not in rate:
+        return {'low_signal': None, 'hackable': None,
+                'skip_reason': 'strong 档没有有效得分率'}
     strong = rate['strong']
     veto_tiers = [t for t, v in j.items() if v.get('vetoed')]
     veto_by = {t: v.get('veto_by', []) for t, v in j.items() if v.get('vetoed')}
@@ -134,14 +154,17 @@ def diagnose(r):
     # 这是 pool 造法问题，不是 rubric 缺陷 —— gap 度量随之失效，弱档作废。
     weak_invalid = is_gated and 'weak' in rate and rate['weak'] >= strong
     weak_cands = ('weak',) if is_gated else WEAK_TIERS
-    weaks = [rate[t] for t in weak_cands
-             if t in rate and not (t == 'weak' and weak_invalid)]
-    allr = list(rate.values())
+    # gated 弱档疑似答对时，它不能参与 gap/std/floor；Hackable 的 suspect
+    # 记录仍保留在原始 rate 上，供 pool 侧复核。
+    measure_rate = {t: value for t, value in rate.items()
+                    if not (t == 'weak' and weak_invalid)}
+    weaks = [measure_rate[t] for t in weak_cands if t in measure_rate]
+    allr = list(measure_rate.values())
 
     # ---- Low Signal（修复 A/C：口径 + 单档差）----
     reasons = []
-    if 'weak' in rate:
-        gap = strong - rate['weak']
+    if 'weak' in measure_rate:
+        gap = strong - measure_rate['weak']
         gap_ref = 'weak 单档'
     elif weaks:
         gap = strong - (sum(weaks) / len(weaks))
@@ -208,10 +231,10 @@ def diagnose(r):
                 if c.get('is_positive')}
     met_of = {}
     for t, v in j.items():
-        for x in v['items']:
-            if x.get('judge_missing'):
+        for x in (v.get('items') or []):
+            if x.get('judge_missing') or not x.get('_criterion_id'):
                 continue
-            met_of[(x['_criterion_id'], t)] = x['met']
+            met_of[(x['_criterion_id'], t)] = bool(x.get('met'))
 
     surface, inconsistent = [], []
     for cid in sorted(pos_cids & {c for c, _ in met_of}):

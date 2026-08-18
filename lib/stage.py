@@ -3,7 +3,7 @@
 每个 stage 从 data/ 读前序 jsonl、写自己的 jsonl，彼此只靠文件耦合，
 因此任一步都能单独重跑。模型选取一律走这里，便于 Phase 1 换模型对比。
 """
-import json, os, sys
+import json, os, sys, time
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -71,12 +71,76 @@ def json_call(model, messages, stage, json_retries=2, **kw):
 
 
 def run(fn, items, workers=8, desc=''):
-    """并发跑 fn(item)，丢弃失败项并报告。返回 (成功列表, 失败列表)。"""
+    """并发跑 fn(item)，返回 (成功列表, 失败列表)。
+
+    失败项仍由 llm.parallel_map 按输入下标记录在 errs 中；调用方必须把
+    errors_by_index(errs) 写回产物，不能把「成功列表」当成完整输入。这里
+    保留旧返回契约，避免一次改动破坏所有 stage，但把失败下标和错误明确打印出来。
+    """
     out, errs = llm.parallel_map(fn, items, workers=workers, desc=desc)
     ok = [r for r in out if r is not None]
     if len(ok) < len(items):
-        print(f'  [{desc}] 成功 {len(ok)}/{len(items)}')
+        print(f'  [{desc}] 成功 {len(ok)}/{len(items)}，失败下标: {[i for i, _ in errs[:20]]}')
+        write_failure_manifest(desc, items, errs)
     return ok, errs
+
+
+def _failure_key(item, index):
+    if isinstance(item, dict):
+        return str(item.get('rid', item.get('id', index)))
+    if isinstance(item, (tuple, list)):
+        return '/'.join(str(x) for x in item[:3])
+    return str(index)
+
+
+def write_failure_manifest(desc, items, errs):
+    """把所有 stage 的失败追加到统一清单，防止未改造的调用方静默丢题。"""
+    path = os.environ.get('RP_FAILURE_MANIFEST',
+                          os.path.join(DATA, '_stage_errors.jsonl'))
+    if not path or not errs:
+        return
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        now = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+        with open(path, 'a', encoding='utf-8') as f:
+            for index, message in errs:
+                f.write(json.dumps({
+                    'time': now, 'stage': str(desc), 'index': int(index),
+                    'key': _failure_key(items[index], index),
+                    'error': str(message)[:500]}, ensure_ascii=False) + '\n')
+    except Exception as e:
+        # 观测清单不能反过来阻断主流程；终端仍会保留失败下标。
+        print(f'  ⚠️ 无法写入失败清单 {path}: {e}')
+
+
+def errors_by_index(errs):
+    """把 parallel_map 的 [(index, error), ...] 转成可持久化映射。"""
+    return {int(i): str(message)[:500] for i, message in (errs or [])}
+
+
+def error_entry(stage_name, key, message):
+    """构造统一的内部失败记录，供 jsonl 产物和检查点复用。"""
+    return {'stage': str(stage_name), 'key': str(key),
+            'error': str(message)[:500]}
+
+
+def add_stage_errors(record, entries):
+    """把失败追加到记录的 _stage_errors，不覆盖上游已有失败。"""
+    out = dict(record)
+    old = list(out.get('_stage_errors') or [])
+    for entry in entries or []:
+        if entry and entry not in old:
+            old.append(dict(entry))
+    if old:
+        out['_stage_errors'] = old
+    return out
+
+
+def add_stage_error(record, stage_name, key, message):
+    """add_stage_errors 的单条便捷形式。"""
+    return add_stage_errors(record, [error_entry(stage_name, key, message)])
 
 
 def stat_cached(metas):

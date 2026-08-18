@@ -21,6 +21,11 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import stage
 
+
+def canonical_round_name(name):
+    return str(name or '').replace('s11Lc', 's11c')
+
+
 ROUNDS = [x.strip() for x in os.environ.get(
     'RP_S11LE_ROUNDS',
     's11c_cons388.jsonl,s11c_r1.jsonl,'
@@ -59,7 +64,7 @@ def main():
         except FileNotFoundError:
             print(f'  跳过不存在的轮次: {name}')
             continue
-        rounds.append((name, {r['rid']: r for r in recs}))
+        rounds.append((canonical_round_name(name), {r['rid']: r for r in recs}))
     if not rounds:
         raise SystemExit('没有可用的诊断轮次')
     print(f'步骤 11e 终态选择: {len(rounds)} 轮')
@@ -80,13 +85,13 @@ def main():
                 best_i, best_r, best_c = i, r, c
         f = flags(best_r.get('consequential'))
         stat['|'.join(sorted(f)) or 'OK'] += 1
-        moved[ROUNDS[best_i]] += 1
+        moved[rounds[best_i][0]] += 1
         rec = dict(best_r)
         # s11d_remedy 的处置记录改挂 `_` 前缀：导出层按「`_` 前缀 = 内部字段」的规则
         # 决定进不进内部档，不带前缀就被静默丢掉（内部档里查不到某题为什么被改）
         if 's11Ld' in rec:
             rec['_s11Ld'] = rec.pop('s11Ld')
-        rec['_s11Le'] = {'chosen_round': ROUNDS[best_i],
+        rec['_s11Le'] = {'chosen_round': rounds[best_i][0],
                          'residual': sorted(f - {'skip'}),
                          'skipped': f == {'skip'},
                          'rounds_seen': sum(1 for _, d in rounds if rid in d)}

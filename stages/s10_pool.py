@@ -380,6 +380,10 @@ def main():
 
     done1, errs1 = stage.run(one, jobs1, workers=WORKERS, desc='s10L 趟1')
     gen = {(rid, tier): (txt, meta) for rid, tier, txt, meta in done1}
+    pool_errors = {}
+    for index, message in errs1:
+        rid, tier = jobs1[index]
+        pool_errors.setdefault(rid, {})[tier] = str(message)[:500]
 
     # ---- 定稿 strong ----
     n_regen = 0
@@ -400,6 +404,9 @@ def main():
     jobs2 = [(r['rid'], 'cut') for r in recs if strong_map[r['rid']][1].strip()]
     done2, errs2 = stage.run(one, jobs2, workers=WORKERS, desc='s10L 趟2(cut)')
     gen.update({(rid, tier): (txt, meta) for rid, tier, txt, meta in done2})
+    for index, message in errs2:
+        rid, tier = jobs2[index]
+        pool_errors.setdefault(rid, {})[tier] = str(message)[:500]
 
     # ---- 汇总 ----
     res, stat = [], Counter()
@@ -455,9 +462,16 @@ def main():
             a_how += '（⚠️答案核验：结论是正确答案，本档失效）'
         add('adv', at, a_how, am)
 
-        res.append({**r, 'pool': pool, 'pool_shared': shared,
-                    'pool_strong_key': key,
-                    'strong_degenerate': deg, 'strong_degenerate_reason': why})
+        rec = {**r, 'pool': pool, 'pool_shared': shared,
+               'pool_strong_key': key,
+               'strong_degenerate': deg, 'strong_degenerate_reason': why}
+        failed = pool_errors.get(r['rid'], {})
+        if failed:
+            rec['pool_errors'] = dict(sorted(failed.items()))
+            rec = stage.add_stage_errors(rec, [
+                stage.error_entry('s10L', tier, message)
+                for tier, message in sorted(failed.items())])
+        res.append(rec)
 
     stage.write_jsonl(OUT, res)
 
