@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -46,6 +47,16 @@ class PipelineIntegrityTests(unittest.TestCase):
             failures = [json.loads(line) for line in manifest.read_text(encoding='utf-8').splitlines()]
             self.assertEqual([x['key'] for x in failures], ['q0001', 'q0002/strong'])
             self.assertEqual(failures[0]['stage'], 'test-stage')
+
+    def test_pool_roles_fall_back_to_base_roles(self):
+        model = type('Model', (), {'name': 'deepseek'})()
+
+        def by_role(role):
+            return {'pool_mid': [], 'judge': [model]}[role]
+
+        with mock.patch.dict(os.environ, {'RP_TEST_POOL_MODEL': ''}), \
+                mock.patch.object(stage.config, 'by_role', side_effect=by_role):
+            self.assertIs(stage.pick('RP_TEST_POOL_MODEL', 'pool_mid'), model)
 
     def test_consequential_skips_missing_or_failed_tiers(self):
         base = {
@@ -91,6 +102,32 @@ class PipelineIntegrityTests(unittest.TestCase):
         self.assertEqual(state_of(0.8, 0.2), 'win')
         self.assertEqual(state_of(0.2, 0.8), 'rev')
         self.assertEqual(state_of(0.5, 0.5), 'tie')
+
+    def test_checkpoint_script_rejects_stale_phase4_outputs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            models = root / 'models.json'
+            models.write_text('[{"name": "deepseek"}]', encoding='utf-8')
+            output_names = (
+                's10_pool388.jsonl', 's12_judged388.jsonl',
+                's11c_cons388.jsonl', 's11e_all452.jsonl')
+            for name in output_names:
+                path = root / name
+                path.write_text('', encoding='utf-8')
+                os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+            source = root / 's04c_phase4.jsonl'
+            source.write_text('{"rid": "q0001"}\n', encoding='utf-8')
+            os.utime(source, ns=(2_000_000_000, 2_000_000_000))
+
+            env = os.environ.copy()
+            env.pop('RP_M_JUDGE', None)
+            env['RP_MODELS'] = str(models)
+            env['RP_OUT'] = str(root)
+            result = subprocess.run(
+                ['bash', 'scripts/rerun_checkpoint2.sh'], cwd=ROOT, env=env,
+                text=True, capture_output=True)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn('检测到旧产物', result.stderr)
 
     def test_empty_checkpoint_writes_exclusions_and_fails(self):
         with tempfile.TemporaryDirectory() as td:

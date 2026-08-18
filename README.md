@@ -48,11 +48,11 @@ RP_CLEAN=1 bash scripts/rerun_all.sh # 同时清结构线缓存（全部 LLM 调
 | 生成（s01-s04） | `RP_M_GEN` / `RP_M_FILTER` / `RP_M_ROUTE` | glm-ac | generator 角色第一个 |
 | 锚定 grounding（s05） | `RP_M_GROUND` | config 里 roles 含 `grounder` 的模型（没有则 deepseek 兜底） | 原全量口径 by-ground |
 | 负项分级 | `RP_M_S04LC` | cn-judge | judge 角色第一个 |
-| 判分 / 草稿判分 | `RP_M_JUDGE` | cn-judge | judge 角色第一个 |
-| veto 复判（第二票） | `RP_M_VETO` | cn-veto | family ≠ 生成器与判分器的第一个 |
-| 处置重写 | `RP_M_S11LD` | cn-gen | generator 角色第一个 |
-| 回复池复核 | `RP_M_POOL_CHECK` | cn-judge | judge 角色第一个 |
-| 回复池 mid / weak / strong | `RP_M_POOL_MID/WEAK/STRONG` | glm-ad / glm-ad / glm-ac | pool_mid / pool_weak / generator |
+| 判分 / 草稿判分 | `RP_M_JUDGE` | cn-judge → deepseek | judge 角色第一个 |
+| veto 复判（第二票） | `RP_M_VETO` | cn-veto → qwen-utility | family ≠ 生成器与判分器的第一个 |
+| 处置重写 | `RP_M_S11LD` | cn-gen → glm-ac | generator 角色第一个 |
+| 回复池复核 | `RP_M_POOL_CHECK` | cn-judge → deepseek | judge 角色第一个 |
+| 回复池 mid / weak / strong | `RP_M_POOL_MID/WEAK/STRONG` | deepseek / glm-ac / glm-ac | pool_mid→judge / pool_weak→generator / generator |
 
 **veto 第三 family 要求**：`RP_M_VETO` 的模型 family 必须既不同于生成器也不同于判分器（硬约束 2）。如果 config 里只有两个 family（比如 glm × 2 + deepseek），Phase 4 的 s12 会明确报错而不是静默降级——需要给 `models.json` 补一个第三 family 的端点（如 qwen / openai / minimax 系），或显式 `RP_M_VETO=<第三个 family 的模型名>`。
 
@@ -83,7 +83,8 @@ python3 scripts/audit_rubrics.py                  # 交付档审计
 - 记录级失败写在 `_stage_errors`：`[{"stage": "s12L", "key": "strong", "error": "..."}]`。
 - 回复池失败写在 `pool_errors`；正式/草稿判分失败写在 `judged[tier].judge_error` 或 `draft_judged[tier].judge_error`。
 - 草稿缺失不会被当成 0 分：`s12b_draft_judge.py` 写 `_checkpoint2.exclude_reason=缺草稿 rubric`，`s12c_pairwise.py` 会逐题保留并排除。
-- `s12c_pairwise.py` 总是写出每道 Phase 4 题的 `excluded` / `exclude_reason`。退出码 `0` = 放行，`1` = 有可测 pair 但判据未通过，`2` = 没有可测 pair，不能误判为通过。
+- `rerun_checkpoint2.sh` 会先校验 Phase 4 文件时间、题集、六档回复池、判分档位和终态选择；Phase 4 中途失败时直接退出 `2`，不会读取上一轮旧产物。
+- `s12c_pairwise.py` 总是写出每道 Phase 4 题的 `excluded` / `exclude_reason`。退出码 `0` = 放行，`1` = 有可测 pair 但判据未通过，`2` = 没有可测 pair，不能误判为通过；如果输入数据没有草稿 rubric，全部排除并退出 `2` 是预期结果。
 - `s11c_consequential.py` 遇到缺档、判分失败或不完整判分时写 `skip_reason`，不会把该题算成无缺陷；早期产物中的 `s11Lc` 轮次名会自动兼容为 `s11c`。
 
 手动重跑时按以下顺序确认：
@@ -94,7 +95,9 @@ bash scripts/rerun_phase4.sh
 bash scripts/rerun_checkpoint2.sh
 ```
 
-如果终端报告失败，先查看对应 JSONL 的 `_stage_errors` / `pool_errors` / `judge_error` 和检查点明细，再按失败的 stage 重跑；修复或服务恢复后，缓存会复用成功任务，不需要盲目清空全部缓存。
+精简开发机配置只声明 `generator/judge` 也能运行：`pool_mid` 自动回退 judge，`pool_weak` 自动回退 generator；分段脚本还会优先按已验证的 `deepseek/glm-ac` 名称显式选择并打印实际模型。
+
+如果终端报告失败，先查看对应 JSONL 的 `_stage_errors` / `pool_errors` / `judge_error` 和检查点明细，再按失败的 stage 重跑；修复或服务恢复后，缓存会复用成功任务，不需要盲目清空全部缓存。数据本身没有草稿 rubric 时只跑 Phase 4，补齐草稿后再跑检查点 2。
 
 ## 项目结构
 

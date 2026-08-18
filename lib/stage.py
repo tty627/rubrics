@@ -37,10 +37,29 @@ def write_jsonl(name, recs):
     return p
 
 
+_ROLE_FALLBACKS = {
+    # 开发机精简配置不必为同一端点重复声明 pool_* 角色。
+    'pool_mid': 'judge',
+    'pool_weak': 'generator',
+}
+
+
 def pick(env, role):
-    """按环境变量指定模型名，缺省取该角色的第一个。"""
+    """按环境变量选模型；专用 pool 角色缺失时回退到已验证的基础角色。"""
     name = os.environ.get(env)
-    return config.get(name) if name else config.one(role)
+    if name:
+        return config.get(name)
+    models = config.by_role(role)
+    if models:
+        return models[0]
+    fallback = _ROLE_FALLBACKS.get(role)
+    if fallback:
+        models = config.by_role(fallback)
+        if models:
+            model = models[0]
+            print(f'  [配置回退] 未配置 {role}，使用 {fallback}={model.name}')
+            return model
+    raise ValueError(f'models.json 里没有 roles 含 "{role}" 的模型')
 
 
 def envflag(name, default):

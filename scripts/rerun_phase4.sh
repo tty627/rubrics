@@ -17,8 +17,8 @@ cd "$REPO"
 
 # 模型默认：候选名不在本机 config 里就回退角色默认（开发机=deepseek/glm-ac）
 cfg_has() { python3 - "$1" <<'PYEOF'
-import json, sys
-cfg = json.load(open('config/models.json', encoding='utf-8'))
+import json, os, sys
+cfg = json.load(open(os.environ.get('RP_MODELS', 'config/models.json'), encoding='utf-8'))
 print('1' if any(m.get('name') == sys.argv[1] for m in cfg) else '0')
 PYEOF
 }
@@ -28,16 +28,24 @@ set_default() {
   fi
 }
 set_default RP_M_JUDGE cn-judge  # 判分器，family 必须 ≠ 生成器（硬约束 2）
-set_default RP_M_VETO cn-veto    # veto 第二票，family 必须 ≠ 判分器与生成器；
-                                 # 本机无 cn-veto 时留空，s12 自动挑第三 family
-                                 # （都没有则明确报错：需补第三 family 端点）
+set_default RP_M_JUDGE deepseek
+set_default RP_M_VETO cn-veto    # veto 第二票必须是第三 family
+set_default RP_M_VETO qwen-utility
 set_default RP_M_S11LD cn-gen    # 处置重写
+set_default RP_M_S11LD glm-ac
+# 精简开发机配置没有 pool_* 角色时也显式选定已验证端点。
+set_default RP_M_POOL_STRONG glm-ac
+set_default RP_M_POOL_MID deepseek
+set_default RP_M_POOL_WEAK glm-ac
+set_default RP_M_POOL_CHECK deepseek
 : "${RP_WORKERS:=6}"
 : "${RP_ROUNDS:=3}"              # 处置轮数
-export RP_M_JUDGE RP_M_VETO RP_M_S11LD RP_WORKERS
+export RP_M_JUDGE RP_M_VETO RP_M_S11LD RP_M_POOL_STRONG RP_M_POOL_MID \
+       RP_M_POOL_WEAK RP_M_POOL_CHECK RP_WORKERS
 
 echo "=== Phase 4 全量 ==="
 echo "判分=$RP_M_JUDGE  veto=$RP_M_VETO  重写=$RP_M_S11LD  并发=$RP_WORKERS  轮数=$RP_ROUNDS"
+echo "回复池: strong=$RP_M_POOL_STRONG  mid=$RP_M_POOL_MID  weak=$RP_M_POOL_WEAK  check=$RP_M_POOL_CHECK"
 echo
 
 # ---- 1. 取双回复题 ----
