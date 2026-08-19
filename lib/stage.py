@@ -16,7 +16,13 @@ SEED = os.environ.get('RP_SEED', 'seed.jsonl')
 
 
 def _path(name):
-    return name if os.path.isabs(name) else os.path.join(DATA, name)
+    if os.path.isabs(name):
+        return name
+    # Accept explicit repository-relative paths such as data/foo.jsonl while
+    # preserving the historical RP_OUT-relative behavior for bare filenames.
+    if name == 'data' or name.startswith(('data/', 'outputs/', 'cache/', 'logs/')):
+        return os.path.join(_ROOT, name)
+    return os.path.join(DATA, name)
 
 
 def read_jsonl(name):
