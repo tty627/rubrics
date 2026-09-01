@@ -1,0 +1,10 @@
+[project]
+name = "rubric-pipeline"
+version = "0.1.0"
+description = "基于 RET + RubricHub 三阶段 + RIFT 诊断的 rubric 自动生成流水线"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.ruff]
+# 无第三方依赖；仅声明元数据，不引入构建后端

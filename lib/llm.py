@@ -14,6 +14,9 @@ _EMPTY_RETRY = 'empty-content'
 # 单次调用最坏约 12 分钟内自愈；配合磁盘缓存，服务端挂十分钟也只是变慢不会丢数据。
 RETRIES = int(os.environ.get('RP_RETRIES', 10))
 BACKOFF_CAP = float(os.environ.get('RP_BACKOFF_CAP', 90))
+# 请求 UA。留空会用 urllib 默认的 "Python-urllib/3.x"，被 Cloudflare 类
+# 前置网关判为脚本流量直接 502（api.opentech.top 实测），必须显式设。
+UA = os.environ.get('RP_UA', 'curl/8.5.0')
 
 # 思维链跑飞的自适应记忆：键为 (模型名, 步骤)。
 # 检测一次跑飞要白烧约 200s（推理吃光预算才知道），而跑飞是按 prompt 模板成片出现的
@@ -27,7 +30,7 @@ STRIKES = int(os.environ.get('RP_RUNAWAY_STRIKES', 2))
 # --- 调用事件流水 ---------------------------------------------------------
 # 缓存文件只有 text 和 usage，没有模型名、没有输入，也看不到「正在飞」的请求，
 # 所以旁观者无从知道此刻哪个模型在跑哪道题。这里补一条 append-only 流水：
-# 每次调用落 start / end（或 hit / err），tools/watch.py 靠配对 start-end 还原在飞请求。
+# 每次调用落 start / end（或 hit / err），外部观测工具可配对 start-end 还原在飞请求。
 # 写失败一律吞掉——观测设施不能反过来弄挂流水线。
 EVENTS = os.environ.get('RP_EVENTS', os.path.join(CACHE_DIR, '_events.jsonl'))
 EV_CHARS = int(os.environ.get('RP_EV_CHARS', 400))       # 输入/输出各留多少字
@@ -50,7 +53,7 @@ def _preview(messages):
 # 事件流水 _events.jsonl 里虽有 usage，但它按 RP_EV_MAX 滚存，历史会被截掉，
 # 累计值算不准。所以另立一本**只增不减、永不滚存**的账：
 #   cache/_tokens.json   聚合总账（按 stage × model 分组）
-# 用法：python3 scripts/token_report.py
+# 直接读这个 json 即可对账（原 scripts/token_report.py 已随 scripts/ 删除）。
 TOKENS = os.environ.get('RP_TOKENS', os.path.join(CACHE_DIR, '_tokens.json'))
 _tlock = threading.Lock()
 
@@ -133,11 +136,15 @@ class Model:
     temperature   : 覆盖默认温度。填 null 表示**整个字段不发**——
                     Claude 系和 kimi 经网关代理时收到 temperature=0.0 会返回
                     HTTP 400，省略该字段即正常。默认 0.0 是为了可复现。
+    stream        : 走流式 SSE 取结果。语义与非流式完全一致（同样的缓存键、
+                    预算翻倍、思维链跑飞检测），只是分片读回后拼接。
+                    留着备用：某些网关只在长响应上超时，流式能保住连接。
+                    注意 api.opentech.top 的 502 **不是**超时问题，见 UA 说明。
     """
 
     def __init__(self, name, model_id, base_url, api_key, family=None, timeout=180,
                  roles=None, reasoning=False, max_tokens=4096, no_think_extra=None,
-                 temperature='__default__'):
+                 temperature='__default__', stream=False):
         self.name = name
         self.model_id = model_id
         self.base_url = base_url.rstrip('/')
@@ -149,6 +156,7 @@ class Model:
         self.max_tokens = max_tokens
         # '__default__' = 用调用方传的温度；None = 整个字段不发；数值 = 强制覆盖
         self.temperature = temperature
+        self.stream = bool(stream)
         self.no_think_extra = no_think_extra or {}
 
 
@@ -215,6 +223,43 @@ def _cache_path(stage, k):
     return os.path.join(d, k + '.json')
 
 
+def _read_sse(resp):
+    """读 SSE 流，返回与非流式同构的 (choice, usage)。
+
+    只负责拼接，不做任何判定 —— 空正文、思维链跑飞、预算不足的处置逻辑
+    在 call() 里共用一份，流式与非流式不允许出现第二套口径。
+    reasoning_content 分片单独累计：它不进正文，但要能算出 reasoning_tokens，
+    否则「思维链跑飞」检测在流式下永远不触发（usage 里没有该字段时用长度兜底）。
+    """
+    parts, reason, usage, finish = [], [], {}, None
+    for raw in resp:
+        line = raw.decode('utf-8', 'replace').strip()
+        if not line.startswith('data:'):
+            continue
+        body = line[5:].strip()
+        if body == '[DONE]':
+            break
+        try:
+            obj = json.loads(body)
+        except ValueError:
+            continue
+        if obj.get('usage'):
+            usage = obj['usage']
+        for ch in obj.get('choices') or []:
+            d = ch.get('delta') or {}
+            if d.get('content'):
+                parts.append(d['content'])
+            if d.get('reasoning_content'):
+                reason.append(d['reasoning_content'])
+            if ch.get('finish_reason'):
+                finish = ch['finish_reason']
+    text = ''.join(parts)
+    if reason and not usage.get('reasoning_tokens'):
+        # 流式常不给 usage。按字符数粗估，只用于跑飞判定的量级比较
+        usage = {**usage, 'reasoning_tokens': len(''.join(reason)) // 2}
+    return {'message': {'content': text}, 'finish_reason': finish}, usage
+
+
 def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
          retries=None, extra=None, use_cache=True, thinking=None):
     """返回 (text, meta)。命中缓存不计费。
@@ -265,16 +310,33 @@ def call(model, messages, stage='misc', temperature=0.0, max_tokens=None,
                 payload.pop('temperature', None)
             elif ov != '__default__':
                 payload['temperature'] = ov
+            # UA 必须显式设。urllib 默认发 "Python-urllib/3.x"，
+            # api.opentech.top 前面的 Cloudflare 对它一律回 502（裸文本
+            # "error code: 502"，无 API 层 JSON），换成常规 UA 立刻 200。
+            # 排查时容易被响应头 Server-Timing: cfOrigin;dur=3601 误导成
+            # 上游超时 —— 实际同一 payload 用 curl 首字节 1.7s 就返回。
+            hdr = {'Content-Type': 'application/json',
+                   'Authorization': f'Bearer {ep.api_key}',
+                   'User-Agent': UA}
+            streaming = getattr(ep, 'stream', False)
+            if streaming:
+                # 流式只为保持连接、绕开网关响应超时，不改任何判定语义。
+                # 缓存键不含 stream：同一 (model_id, messages, 预算) 无论走哪种
+                # 传输方式都该命中同一条缓存，否则开关一动缓存全废。
+                payload['stream'] = True
+                payload['stream_options'] = {'include_usage': True}
+                hdr['Accept'] = 'text/event-stream'
             req = urllib.request.Request(
                 f'{ep.base_url}/chat/completions',
                 data=json.dumps(payload, ensure_ascii=False).encode(),
-                headers={'Content-Type': 'application/json',
-                         'Authorization': f'Bearer {ep.api_key}'})
+                headers=hdr)
             with urllib.request.urlopen(req, timeout=ep.timeout) as r:
-                obj = json.loads(r.read().decode())
-            ch = obj['choices'][0]
+                if streaming:
+                    ch, usage = _read_sse(r)
+                else:
+                    obj = json.loads(r.read().decode())
+                    ch, usage = obj['choices'][0], obj.get('usage', {})
             text = (ch['message'].get('content') or '').strip()
-            usage = obj.get('usage', {})
             if not text:
                 # 两种成因，处置相反，必须分开：
                 # a) 思维链跑飞——推理吃光整个预算却一字正文未出。加预算只会让跑飞的

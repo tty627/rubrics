@@ -17,15 +17,22 @@
 
 veto 设计约束（Qwen《Reinforcement Learning with Rubric Anchors》veto 机制 +
 教育测量的 conjunctive/compensatory 混合模型）：
-- veto 项必须**原子**：单一错误，不含「且/或」串接（s04Lc 用 SUBJ_DEG 同款正则兜底）；
+- veto 项必须**原子**：单一错误，不含「且/或」串接（阶段 10 用 SUBJ_DEG 同款正则兜底）；
 - 判据是「触犯即整题不合格」，不是「扣分较多」；
 - 规则必须**显式声明**（VETO_RULE），不能藏在权重里；
 - 聚合走 apply_veto：raw_rate 保留不含 veto 的补偿式得分率，供区分度诊断
-  （s11Lc）与审计使用，避免 veto 归零污染 gap/std/floor 判据。
+  （阶段 23）与审计使用，避免 veto 归零污染 gap/std/floor 判据。
 """
+import re
 
-# ---- 负项严重性分级（s04Lc 给负项打标，分值只作权重、分级独立成字段）----
+# ---- 负项严重性分级（阶段 10 给负项打标，分值只作权重、分级独立成字段）----
 SEVERITY_LEVELS = ('principle', 'major', 'minor')
+
+# ---- 判定线词表（阶段 06 打质量标记、阶段 10 卡 veto 门槛，两处必须同口径）----
+# 「可核验字面量」：数字、拉丁串、公式符号、引号包裹内容。有它才算判定线写实了。
+ANCHOR = re.compile(r'[0-9A-Za-z=＝≈±<>≤≥$]|["“”]')
+# 主观程度词：拿它当判定线的准则，判分器各判各的，不能当 veto 或扣分依据。
+SUBJ_DEG = re.compile(r'严重|显著|根本性|明显|大幅|过度')
 
 # ---- 闸门规则 ----
 GATE_MIN_SCORE = 4      # 闸门项分值下限：低于此是支撑项，不冒充闸门

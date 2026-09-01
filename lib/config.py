@@ -1,17 +1,8 @@
-"""模型端点配置：加载 config/models.json、按角色取模型、校验异质性硬约束。
-
-约束出处见 CLAUDE.md「Critical Constraints」与 docs/design/PLAN.md §1：
-  步骤 6  多模型聚合：需 ≥2 个 generator 且 family 互异（同系列共享盲区）
-  步骤 11 RIFT 诊断  ：diagnoser 需异质组合
-  步骤 12 判分       ：judge 的 family 必须不同于所有 generator（避免自偏好偏差）
-
-前两条与第三条的区别：步骤 6/12 缺了会让结果失效，属硬失败；步骤 11 单一
-diagnoser 仍能跑免池诊断（Phase 2 就是这么用的），只降覆盖，故只告警。
-
-直接运行会校验配置并对每个端点做一次真实探活：
-    python3 lib/config.py
-"""
-import json, os, sys, time
+"""模型端点配置、精确角色选择和异源判分约束。"""
+import json
+import os
+import sys
+import time
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -19,149 +10,148 @@ if _ROOT not in sys.path:
 from lib.llm import Model, Pool
 
 CONFIG = os.environ.get('RP_MODELS', os.path.join(_ROOT, 'config', 'models.json'))
+# 各大厂商闭源系列。grounder（权威答案源）只能取自这里。
+CLOSED_SOURCE_FAMILIES = {'anthropic', 'openai', 'google'}
 _cache = None
 
 
 def load(path=None, check=True):
-    """读 models.json → {name: Model|Pool}，按文件顺序。违反硬约束直接抛。
-
-    models.json 里可以定义 Pool：把一组端点标记同一个 pool_group（任意字符串），
-    load() 会把同组端点合并成一个 Pool 对象，name 是这组端点名的「+」拼接。
-    Pool 成员必须是同一 family，否则构造抛异常——混用会破坏步骤 6/12 的异质性约束。
-
-    Pool 的用途是把同一角色的负载摊到多个端点上：实测单个 GLM 端点开思维链
-    单次约 32s，20 条题的步骤 3 要跑 55 分钟，而另一个端点整个闲置。
-    """
+    """读取 models.json；必需角色缺失或判分模型同源时直接失败。"""
     global _cache
     if _cache is not None and path is None:
         return _cache
-    p = path or CONFIG
-    if not os.path.exists(p):
+    target = path or CONFIG
+    if not os.path.exists(target):
         raise FileNotFoundError(
-            f'缺少 {p}。复制 config/models.json.example 为 config/models.json 并填端点。')
-    with open(p, encoding='utf-8') as f:
-        raw = json.load(f)
+            f'缺少 {target}。复制 config/models.json.example 为 config/models.json 并填端点。')
+    with open(target, encoding='utf-8') as stream:
+        raw = json.load(stream)
 
     models = {}
     pools = {}
-    for d in raw:
-        m = Model(name=d['name'], model_id=d['model_id'], base_url=d['base_url'],
-                  api_key=d.get('api_key', 'EMPTY'), family=d.get('family'),
-                  timeout=d.get('timeout', 180), roles=d.get('roles', []),
-                  reasoning=d.get('reasoning', False),
-                  max_tokens=d.get('max_tokens', 4096),
-                  no_think_extra=d.get('no_think_extra'),
-                  # 键不存在 → 用默认温度；键存在但为 null → 不发 temperature 字段
-                  temperature=(d['temperature'] if 'temperature' in d
-                               else '__default__'))
-        pg = d.get('pool_group')
-        if pg:
-            pools.setdefault(pg, []).append(m)
+    for item in raw:
+        model = Model(
+            name=item['name'], model_id=item['model_id'], base_url=item['base_url'],
+            api_key=item.get('api_key', 'EMPTY'), family=item.get('family'),
+            timeout=item.get('timeout', 180), roles=item.get('roles', []),
+            reasoning=item.get('reasoning', False), max_tokens=item.get('max_tokens', 4096),
+            no_think_extra=item.get('no_think_extra'),
+            temperature=(item['temperature'] if 'temperature' in item else '__default__'),
+            stream=item.get('stream', False))
+        group = item.get('pool_group')
+        if group:
+            pools.setdefault(group, []).append(model)
+        elif model.name in models:
+            raise ValueError(f'models.json 中 name 重复: {model.name}')
         else:
-            if m.name in models:
-                raise ValueError(f'models.json 中 name 重复: {m.name}')
-            models[m.name] = m
+            models[model.name] = model
 
-    # 合并每个 pool_group
-    for pg, members in pools.items():
+    for group, members in pools.items():
         pool = Pool(members)
         if pool.name in models:
-            raise ValueError(f'pool_group={pg} 生成的 name="{pool.name}" 与已有 Model 冲突')
+            raise ValueError(f'pool_group={group} 生成的 name="{pool.name}" 与已有模型冲突')
         models[pool.name] = pool
 
     if check:
-        hard, soft = inspect(models)
-        for s in soft:
-            print(f'  [配置告警] {s}')
-        if hard:
-            raise ValueError('模型配置违反硬约束：\n  - ' + '\n  - '.join(hard))
+        errors = inspect(models)
+        if os.environ.get('RP_ALLOW_OPEN_GROUNDER') == '1':
+            print('⚠️  RP_ALLOW_OPEN_GROUNDER=1：grounder 用开源模型，'
+                  'canonical 答案正确性不保证（临时放行）')
+        if errors:
+            raise ValueError('模型配置违反硬约束：\n  - ' + '\n  - '.join(errors))
     if path is None:
         _cache = models
     return models
 
 
-def inspect(ms):
-    """返回 (硬失败, 软告警) 两个文字列表，都为空表示配置健康。"""
-    gen = [m for m in ms.values() if 'generator' in m.roles]
-    gf = {m.family for m in gen}
-    hard, soft = [], []
+def inspect(models, allow_open_grounder=None):
+    """返回全部硬错误；唯一主线不提供缺角色或同源模型的降级路径。
 
-    if len(gen) < 2:
-        hard.append(f'步骤 6 需 ≥2 个 generator，当前 {len(gen)} 个')
-    elif len(gf) < 2:
-        hard.append(f'步骤 6 需 generator 的 family 互异，当前只有 {sorted(gf)}')
+    `allow_open_grounder` 显式传 True/False 时覆盖环境开关；缺省读
+    `RP_ALLOW_OPEN_GROUNDER`（临时放行，见下）。测试用它强制走闭源判定，
+    不受环境变量干扰。
+    """
+    if allow_open_grounder is None:
+        allow_open_grounder = os.environ.get('RP_ALLOW_OPEN_GROUNDER') == '1'
+    # 必需角色 = 流水线真正会 pick 的角色。grounder 取代了原 solver：
+    # 可核验答案的权威解由闭源最强模型出（阶段 20），不再有独立 solver 角色。
+    by_role_map = {
+        role: [model for model in models.values() if role in model.roles]
+        for role in ('generator', 'diagnoser', 'grounder', 'judge', 'veto',
+                     'pool_mid', 'pool_weak')
+    }
+    errors = []
+    for role, members in by_role_map.items():
+        if not members:
+            errors.append(f'未配置必需角色 {role}')
 
-    for j in [m for m in ms.values() if 'judge' in m.roles]:
-        if j.family in gf:
-            hard.append(f'步骤 12 judge "{j.name}" 的 family={j.family} 与 generator '
-                        f'同系列（generator families={sorted(gf)}），判分会虚高')
-    if not any('judge' in m.roles for m in ms.values()):
-        soft.append('未配置 judge，步骤 12 判分不可用（Phase 1-3 不需要）')
+    generator_families = {model.family for model in by_role_map['generator']}
+    judge_families = {model.family for model in by_role_map['judge']}
+    for judge in by_role_map['judge']:
+        if judge.family in generator_families:
+            errors.append(
+                f'judge "{judge.name}" family={judge.family} 与 generator 同源')
+    for reviewer in by_role_map['veto']:
+        if reviewer.family in generator_families | judge_families:
+            errors.append(
+                f'veto "{reviewer.name}" family={reviewer.family} 必须异于 generator 和 judge')
 
-    dg = [m for m in ms.values() if 'diagnoser' in m.roles]
-    df = {m.family for m in dg}
-    if not dg:
-        soft.append('未配置 diagnoser，步骤 11 RIFT 诊断不可用')
-    elif len(df) < 2:
-        soft.append(f'步骤 11 diagnoser 只有 family={sorted(df)}，'
-                    f'免池诊断可跑但失效模式覆盖会偏窄')
-    return hard, soft
+    # grounder 是可核验题正确答案的唯一权威来源，必须是各厂商闭源最强模型：
+    # 自建开源端点解错了没人拦，而下游 22 的程序化核验无条件相信 answer_canonical。
+    # RP_ALLOW_OPEN_GROUNDER=1 是临时放行：闭源凭据失效时先用开源占位把机制跑通，
+    # 但 canonical 答案正确性不保证。默认（不设）仍然硬拦 —— 这是设计红线，别默认放开。
+    if not allow_open_grounder:
+        for ground in by_role_map['grounder']:
+            if ground.family not in CLOSED_SOURCE_FAMILIES:
+                errors.append(
+                    f'grounder "{ground.name}" family={ground.family} 不在闭源厂商列表 '
+                    f'{sorted(CLOSED_SOURCE_FAMILIES)}；权威答案不得由自建开源端点提供')
+    return errors
 
 
 def by_role(role, path=None):
-    """取带某角色的全部模型，保持 models.json 顺序。"""
-    return [m for m in load(path).values() if role in m.roles]
+    return [model for model in load(path).values() if role in model.roles]
 
 
 def one(role, path=None):
-    """取该角色的第一个模型。没有则抛。"""
-    ms = by_role(role, path)
-    if not ms:
+    models = by_role(role, path)
+    if not models:
         raise ValueError(f'models.json 里没有 roles 含 "{role}" 的模型')
-    return ms[0]
+    return models[0]
 
 
 def get(name, path=None):
-    """按 name 取单个模型。"""
-    ms = load(path)
-    if name not in ms:
-        raise ValueError(f'未知模型 "{name}"，可用: {list(ms)}')
-    return ms[name]
+    models = load(path)
+    if name not in models:
+        raise ValueError(f'未知模型 "{name}"，可用: {list(models)}')
+    return models[name]
 
 
 def _probe():
-    """真实打一次每个端点，确认 model_id、鉴权、非空返回都对。"""
     from lib import llm
-    ms = load()
+    models = load()
     print(f'配置: {CONFIG}\n')
-    print(f'{"name":<15}{"family":<10}{"roles":<26}{"延迟":<9}结果')
-    print('-' * 78)
+    print(f'{"name":<15}{"family":<12}{"roles":<36}{"延迟":<9}结果')
+    print('-' * 90)
     ok = 0
-    for m in ms.values():
-        t0 = time.time()
+    for model in models.values():
+        started = time.time()
         try:
-            txt, meta = llm.call(
-                m, [{'role': 'user', 'content': '只回复两个字：可用'}],
-                stage='_probe', max_tokens=m.max_tokens, use_cache=False,
+            text, meta = llm.call(
+                model, [{'role': 'user', 'content': '只回复两个字：可用'}],
+                stage='_probe', max_tokens=model.max_tokens, use_cache=False,
                 retries=2, thinking=False)
-            dt = f'{time.time() - t0:.1f}s'
-            u = meta.get('usage', {})
-            print(f'{m.name:<15}{m.family:<10}{",".join(m.roles):<26}{dt:<9}'
-                  f'OK {txt[:14]!r} (reasoning={u.get("reasoning_tokens", 0)})')
+            elapsed = f'{time.time() - started:.1f}s'
+            usage = meta.get('usage', {})
+            print(f'{model.name:<15}{model.family:<12}{",".join(model.roles):<36}{elapsed:<9}'
+                  f'OK {text[:14]!r} (reasoning={usage.get("reasoning_tokens", 0)})')
             ok += 1
-        except Exception as e:
-            print(f'{m.name:<15}{m.family:<10}{",".join(m.roles):<26}'
-                  f'{time.time() - t0:.1f}s'.ljust(60) + f'失败 {repr(e)[:90]}')
-    print('-' * 78)
-    print(f'{ok}/{len(ms)} 个端点可用')
-
-    gf = sorted({m.family for m in ms.values() if 'generator' in m.roles})
-    jf = sorted({m.family for m in ms.values() if 'judge' in m.roles})
-    df = sorted({m.family for m in ms.values() if 'diagnoser' in m.roles})
-    print(f'\n步骤 6  generator families : {gf}')
-    print(f'步骤 11 diagnoser families : {df}')
-    print(f'步骤 12 judge families     : {jf}  (须与 generator 无交集)')
-    return 0 if ok == len(ms) else 1
+        except Exception as error:
+            print(f'{model.name:<15}{model.family:<12}{",".join(model.roles):<36}'
+                  f'{time.time() - started:.1f}s 失败 {repr(error)[:90]}')
+    print('-' * 90)
+    print(f'{ok}/{len(models)} 个端点可用')
+    return 0 if ok == len(models) else 1
 
 
 if __name__ == '__main__':
